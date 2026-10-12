@@ -217,12 +217,17 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             pdesc = html_escape(str(p.get("description") or ""))
             ptech = html_escape(str(p["technology"]))
             pstatus = html_escape(str(p["status"]))
+            badge_class = "badge-py"
+            if p["technology"] == "SQL":
+                badge_class = "badge-sql"
+            elif p["technology"] == "React":
+                badge_class = "badge-react"
             row_items.append(
                 f'<tr>'
                 f'<td>#{pid}</td>'
                 f'<td style="font-weight: 600;">{pname}</td>'
                 f'<td style="color: #94a3b8;">{pdesc}</td>'
-                f'<td><span class="badge badge-py">{ptech}</span></td>'
+                f'<td><span class="badge {badge_class}">{ptech}</span></td>'
                 f'<td><span class="status-badge">{pstatus}</span></td>'
                 f'<td><button type="button" class="btn-danger" data-id="{pid}">Delete</button></td>'
                 f'</tr>'
@@ -284,13 +289,20 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     .clear-btn { position: absolute; right: 0.75rem; top: 50%; transform: translateY(-50%); background: transparent; border: none; color: #94a3b8; font-size: 1.1rem; cursor: pointer; padding: 0.25rem; }
     .clear-btn:hover { color: #f8fafc; background: transparent; }
     .filter-chips { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
-    .chip { padding: 0.35rem 0.8rem; border-radius: 9999px; font-size: 0.8rem; font-weight: 600; cursor: pointer; background: #0f172a; border: 1px solid #334155; color: #94a3b8; transition: all 0.2s; }
-    .chip:hover { border-color: #38bdf8; color: white; }
-    .chip.active { background: #0284c7; border-color: #38bdf8; color: white; }
+    .chip { padding: 0.45rem 1rem; border-radius: 9999px; font-size: 0.85rem; font-weight: 600; cursor: pointer; background: #0f172a; border: 1px solid #334155; color: #94a3b8; transition: all 0.2s; }
+    .chip:hover { border-color: #38bdf8; color: white; background: #1e293b; }
+    .chip.active { background: #0284c7; border-color: #38bdf8; color: white; box-shadow: 0 0 10px rgba(56, 189, 248, 0.4); }
     .search-meta { display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.75rem; }
     .highlight { background: rgba(56, 189, 248, 0.3); color: #38bdf8; font-weight: 700; border-radius: 0.2rem; padding: 0 0.2rem; }
     .btn-link { background: transparent; color: #38bdf8; border: none; padding: 0; font-size: 0.85rem; cursor: pointer; text-decoration: underline; }
     .btn-link:hover { background: transparent; color: #7dd3fc; }
+    @keyframes rowHighlight {
+      0% { background-color: rgba(56, 189, 248, 0.35); }
+      100% { background-color: transparent; }
+    }
+    .new-row-flash {
+      animation: rowHighlight 2.5s ease-out;
+    }
   </style>
 </head>
 <body>
@@ -358,26 +370,34 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         <span id="records-counter" style="font-size: 0.85rem; color: #94a3b8;">__INITIAL_COUNTER__</span>
       </div>
 
-      <!-- Live Search Box -->
-      <div class="search-box-wrapper">
-        <span class="search-icon">🔍</span>
-        <input
-          type="text"
-          id="search-input"
-          class="search-input"
-          placeholder="Live search by project name or description in real-time..."
-          autocomplete="off"
-        />
-        <button
-          type="button"
-          id="clear-search-btn"
-          class="clear-btn"
-          style="display: none;"
-          title="Clear search"
-        >✕</button>
+      <!-- Live Search Box with dedicated Search Button -->
+      <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap;">
+        <div class="search-box-wrapper" style="flex: 1; min-width: 240px; margin-bottom: 0;">
+          <span class="search-icon">🔍</span>
+          <input
+            type="text"
+            id="search-input"
+            class="search-input"
+            placeholder="Search by project name, description, or ID..."
+            autocomplete="off"
+          />
+          <button
+            type="button"
+            id="clear-search-btn"
+            class="clear-btn"
+            style="display: none;"
+            title="Clear search"
+          >✕</button>
+        </div>
+        <button type="button" id="btn-search" style="padding: 0.75rem 1.5rem; white-space: nowrap;">
+          🔍 Search
+        </button>
       </div>
 
-      <!-- Filter Chips -->
+      <!-- Filter Buttons Header -->
+      <div style="margin-bottom: 0.5rem; font-size: 0.85rem; color: #94a3b8; font-weight: 600;">
+        Filter by Category:
+      </div>
       <div class="filter-chips" id="filter-chips">__INITIAL_CHIPS__</div>
 
       <!-- Search Meta Indicator -->
@@ -436,6 +456,7 @@ __INITIAL_TABLE_ROWS__
     const projectsTbody = document.getElementById('projects-tbody');
     const recordsCounter = document.getElementById('records-counter');
     const searchInput = document.getElementById('search-input');
+    const btnSearch = document.getElementById('btn-search');
     const clearSearchBtn = document.getElementById('clear-search-btn');
     const filterChipsContainer = document.getElementById('filter-chips');
     const searchMeta = document.getElementById('search-meta');
@@ -484,12 +505,16 @@ __INITIAL_TABLE_ROWS__
                t + ' (' + count + ')</button>';
       }).join('');
 
-      // Add click handlers
+      // Add click handlers: Clicking category shows ONLY rows of that category!
       filterChipsContainer.querySelectorAll('.chip').forEach(btn => {
         btn.addEventListener('click', () => {
           selectedTech = btn.getAttribute('data-tech');
-          renderTable();
+          // Clear any search text so category filter cleanly shows only those rows
+          searchQuery = '';
+          searchInput.value = '';
+          clearSearchBtn.style.display = 'none';
           renderChips();
+          renderTable();
         });
       });
     }
@@ -498,42 +523,43 @@ __INITIAL_TABLE_ROWS__
     function renderTable() {
       const q = searchQuery.trim().toLowerCase();
       const filtered = allProjects.filter(p => {
-        // If no search query, show all records normally
-        if (!q) {
-          return selectedTech === 'All' || p.technology === selectedTech;
-        }
+        // Filter by selected category button
+        const matchTech = selectedTech === 'All' || p.technology === selectedTech;
+        if (!matchTech) return false;
 
-        // When searching, show ONLY the specified matching record(s)
+        // If no search query, show all records in category normally
+        if (!q) return true;
+
+        // When searched, show ONLY matching records
         const nameStr = (p.name || '').toLowerCase();
         const descStr = (p.description || '').toLowerCase();
         const techStr = (p.technology || '').toLowerCase();
         const statusStr = (p.status || '').toLowerCase();
         const idStr = String(p.id);
 
-        const matchSearch = nameStr.includes(q) ||
+        return nameStr.includes(q) ||
           descStr.includes(q) ||
           techStr.includes(q) ||
           statusStr.includes(q) ||
           idStr === q ||
           ('#' + idStr) === q;
-
-        const matchTech = selectedTech === 'All' || p.technology === selectedTech;
-        return matchSearch && matchTech;
       });
 
       // Update counter
-      if (filtered.length === allProjects.length) {
+      if (filtered.length === allProjects.length && !q && selectedTech === 'All') {
         recordsCounter.textContent = 'Showing all ' + allProjects.length + ' records';
       } else {
         recordsCounter.textContent = 'Showing ' + filtered.length + ' of ' + allProjects.length + ' records';
       }
 
-      // Update search meta info
+      // Update search/filter meta display
       if (searchQuery || selectedTech !== 'All') {
         searchMeta.style.display = 'flex';
-        let metaHtml = 'Filtering by: ';
-        if (searchQuery) metaHtml += 'query "<strong>' + escapeHtml(searchQuery) + '</strong>" ';
-        if (selectedTech !== 'All') metaHtml += 'technology "<strong>' + escapeHtml(selectedTech) + '</strong>"';
+        let metaHtml = '<span>Showing: ';
+        if (selectedTech !== 'All') metaHtml += 'category <strong>' + escapeHtml(selectedTech) + '</strong>';
+        if (selectedTech !== 'All' && searchQuery) metaHtml += ' + ';
+        if (searchQuery) metaHtml += 'search "<strong>' + escapeHtml(searchQuery) + '</strong>"';
+        metaHtml += '</span>';
         searchMetaText.innerHTML = metaHtml;
       } else {
         searchMeta.style.display = 'none';
@@ -542,9 +568,10 @@ __INITIAL_TABLE_ROWS__
       // Render table rows
       if (filtered.length === 0) {
         if (allProjects.length > 0) {
+          const reason = searchQuery ? 'search for "' + escapeHtml(searchQuery) + '"' : 'category "' + escapeHtml(selectedTech) + '"';
           projectsTbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #94a3b8; padding: 2.5rem;">' +
-            '🔍 No projects match your search for "' + escapeHtml(searchQuery) + '".' +
-            '<br><button type="button" class="btn-link" id="empty-clear-btn" style="margin-top: 0.75rem;">Clear search filters</button>' +
+            '🔍 No projects match your ' + reason + '.' +
+            '<br><button type="button" class="btn-link" id="empty-clear-btn" style="margin-top: 0.75rem;">Show all records</button>' +
             '</td></tr>';
           const emptyBtn = document.getElementById('empty-clear-btn');
           if (emptyBtn) emptyBtn.addEventListener('click', resetFilters);
@@ -555,15 +582,23 @@ __INITIAL_TABLE_ROWS__
       }
 
       projectsTbody.innerHTML = filtered.map(p => {
-        return '<tr>' +
+        let badgeClass = 'badge-py';
+        if (p.technology === 'SQL') badgeClass = 'badge-sql';
+        else if (p.technology === 'React') badgeClass = 'badge-react';
+
+        const flashClass = p._isNew ? ' class="new-row-flash"' : '';
+        return '<tr' + flashClass + '>' +
           '<td>#' + p.id + '</td>' +
           '<td style="font-weight: 600;">' + highlight(p.name, searchQuery) + '</td>' +
           '<td style="color: #94a3b8;">' + highlight(p.description, searchQuery) + '</td>' +
-          '<td><span class="badge badge-py">' + escapeHtml(p.technology) + '</span></td>' +
+          '<td><span class="badge ' + badgeClass + '">' + escapeHtml(p.technology) + '</span></td>' +
           '<td><span class="status-badge">' + escapeHtml(p.status) + '</span></td>' +
           '<td><button type="button" class="btn-danger" data-id="' + p.id + '">Delete</button></td>' +
           '</tr>';
       }).join('');
+
+      // Reset temporary flash flag after rendering
+      filtered.forEach(p => { if (p._isNew) delete p._isNew; });
 
       // Attach delete listeners
       projectsTbody.querySelectorAll('.btn-danger').forEach(btn => {
@@ -580,16 +615,34 @@ __INITIAL_TABLE_ROWS__
       selectedTech = 'All';
       searchInput.value = '';
       clearSearchBtn.style.display = 'none';
-      renderTable();
       renderChips();
+      renderTable();
     }
     resetFiltersBtn.addEventListener('click', resetFilters);
 
-    // Live search input handler
-    searchInput.addEventListener('input', (e) => {
-      searchQuery = e.target.value;
-      clearSearchBtn.style.display = searchQuery ? 'block' : 'none';
+    // Execute search when user clicks Search button or presses Enter
+    function executeSearch() {
+      searchQuery = searchInput.value.trim();
+      clearSearchBtn.style.display = searchInput.value ? 'block' : 'none';
       renderTable();
+    }
+
+    btnSearch.addEventListener('click', executeSearch);
+
+    searchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        executeSearch();
+      }
+    });
+
+    // Update clear button visibility as user types, and if cleared, auto-reset search
+    searchInput.addEventListener('input', () => {
+      clearSearchBtn.style.display = searchInput.value ? 'block' : 'none';
+      if (searchInput.value.trim() === '' && searchQuery !== '') {
+        searchQuery = '';
+        renderTable();
+      }
     });
 
     clearSearchBtn.addEventListener('click', () => {
@@ -623,7 +676,7 @@ __INITIAL_TABLE_ROWS__
       }
     }
 
-    // Insert New Project
+    // Insert New Project with Instant Real-Time UI Update
     projectForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       const nameInput = document.getElementById('proj-name');
@@ -636,34 +689,77 @@ __INITIAL_TABLE_ROWS__
       const tech = techInput.value;
       if (!name) return;
 
-      btnSubmit.disabled = true;
-      btnSubmit.textContent = 'Inserting...';
+      // Clear input fields immediately so user can type next entry
+      nameInput.value = '';
+      descInput.value = '';
 
+      // Instant optimistic UI update: calculate temp id and prepend to table
+      const tempId = (allProjects.length > 0 ? Math.max(...allProjects.map(p => Number(p.id) || 0)) : 0) + 1;
+      const newRecord = {
+        id: tempId,
+        name: name,
+        description: desc,
+        technology: tech,
+        status: 'In Progress',
+        _isNew: true
+      };
+
+      allProjects.unshift(newRecord);
+
+      // Make sure the new row is visible in the table
+      if (selectedTech !== 'All' && selectedTech !== tech) {
+        selectedTech = 'All';
+      }
+      searchQuery = '';
+      searchInput.value = '';
+      clearSearchBtn.style.display = 'none';
+
+      // Update UI in real-time (0ms delay)
+      renderChips();
+      renderTable();
+      statTotal.textContent = allProjects.length;
+
+      // Asynchronously persist to SQLite in background
       try {
-        await fetch('/api/projects', {
+        const res = await fetch('/api/projects', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name, description: desc, technology: tech })
         });
-        nameInput.value = '';
-        descInput.value = '';
-        await fetchProjects();
-        await fetchStats();
+        if (!res.ok) throw new Error('Server returned ' + res.status);
+        const data = await res.json();
+        if (data && data.id) {
+          newRecord.id = data.id;
+          renderTable();
+        }
+        fetchStats();
       } catch (err) {
-        alert('Error saving project: ' + err.message);
-      } finally {
-        btnSubmit.disabled = false;
-        btnSubmit.textContent = '+ Insert into SQL';
+        // Rollback on failure
+        allProjects = allProjects.filter(p => p !== newRecord);
+        renderChips();
+        renderTable();
+        statTotal.textContent = allProjects.length;
+        alert('Error saving project to database: ' + err.message);
       }
     });
 
-    // Delete Project
+    // Delete Project with Instant Real-Time UI Update
     async function deleteProject(id) {
+      const prevProjects = [...allProjects];
+      allProjects = allProjects.filter(p => String(p.id) !== String(id));
+      renderChips();
+      renderTable();
+      statTotal.textContent = allProjects.length;
+
       try {
-        await fetch('/api/projects/' + id, { method: 'DELETE' });
-        await fetchProjects();
-        await fetchStats();
+        const res = await fetch('/api/projects/' + id, { method: 'DELETE' });
+        if (!res.ok) throw new Error('Server returned ' + res.status);
+        fetchStats();
       } catch (err) {
+        allProjects = prevProjects;
+        renderChips();
+        renderTable();
+        statTotal.textContent = allProjects.length;
         alert('Error deleting project: ' + err.message);
       }
     }
