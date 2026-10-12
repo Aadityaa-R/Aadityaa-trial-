@@ -657,43 +657,43 @@ __INITIAL_EDIT_OPTIONS__
         </div>
       </div>
 
-      <!-- Search & Sort Controls -->
-      <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; align-items: center;">
-        <div class="search-box-wrapper" style="flex: 1; min-width: 220px; margin-bottom: 0;">
-          <span class="search-icon">🔍</span>
-          <input
-            type="text"
-            id="search-input"
-            class="search-input"
-            placeholder="Search by project name, description, or ID..."
-            autocomplete="off"
-          />
-          <button
-            type="button"
-            id="clear-search-btn"
-            class="clear-btn"
-            style="display: none;"
-            title="Clear search"
-          >✕</button>
-        </div>
-        <button type="button" id="btn-search" style="padding: 0.75rem 1.25rem; white-space: nowrap;">
-          🔍 Search
-        </button>
-
-        <!-- Single Sort Button with Dropdown Menu -->
-        <div id="sort-wrapper" style="position: relative;">
-          <button type="button" id="btn-sort" class="btn-sort" title="Filter / Sort by category">
-            <span>Sort: <strong id="sort-current-label">All</strong></span>
-            <span id="sort-arrow" style="font-size: 0.75rem; margin-left: 0.25rem;">▼</span>
-          </button>
-          <div id="sort-dropdown-menu" class="sort-dropdown-menu" style="display: none;">
-__INITIAL_SORT_OPTIONS__
-          </div>
-        </div>
-      </div>
-
       <!-- SECTION 1: Table View (Displayed by Default) -->
       <div id="view-table-section">
+        <!-- Search & Sort Controls (Table Only) -->
+        <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; align-items: center;">
+          <div class="search-box-wrapper" style="flex: 1; min-width: 220px; margin-bottom: 0;">
+            <span class="search-icon">🔍</span>
+            <input
+              type="text"
+              id="search-input"
+              class="search-input"
+              placeholder="Search by project name, description, or ID..."
+              autocomplete="off"
+            />
+            <button
+              type="button"
+              id="clear-search-btn"
+              class="clear-btn"
+              style="display: none;"
+              title="Clear search"
+            >✕</button>
+          </div>
+          <button type="button" id="btn-search" style="padding: 0.75rem 1.25rem; white-space: nowrap;">
+            🔍 Search
+          </button>
+
+          <!-- Single Sort Button with Dropdown Menu -->
+          <div id="sort-wrapper" style="position: relative;">
+            <button type="button" id="btn-sort" class="btn-sort" title="Filter / Sort by category">
+              <span>Sort: <strong id="sort-current-label">All</strong></span>
+              <span id="sort-arrow" style="font-size: 0.75rem; margin-left: 0.25rem;">▼</span>
+            </button>
+            <div id="sort-dropdown-menu" class="sort-dropdown-menu" style="display: none;">
+__INITIAL_SORT_OPTIONS__
+            </div>
+          </div>
+        </div>
+
         <!-- Search Meta Indicator -->
         <div id="search-meta" class="search-meta" style="display: none;">
           <span id="search-meta-text"></span>
@@ -722,22 +722,6 @@ __INITIAL_TABLE_ROWS__
 
       <!-- SECTION 2: Category Pie Chart View (Only displayed when Category Chart option is clicked, instead of table) -->
       <div id="view-chart-section" style="display: none;">
-        <!-- Sorting Categories Filter & Sort Order Bar -->
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem; flex-wrap: wrap; gap: 0.75rem; background: #120e24; padding: 0.75rem 1rem; border-radius: 0.5rem; border: 1px solid #2e264f;">
-          <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
-            <span style="font-size: 0.85rem; color: #a79fc2; font-weight: 600;">Sorting Category:</span>
-            <div id="chart-cat-chips" style="display: flex; gap: 0.35rem; flex-wrap: wrap;"></div>
-          </div>
-          <div style="display: flex; align-items: center; gap: 0.5rem;">
-            <span style="font-size: 0.85rem; color: #a79fc2; font-weight: 600;">Sort By:</span>
-            <select id="chart-sort-mode" style="background: #1c1735; color: #f5f3ff; border: 1px solid #3b3263; border-radius: 0.4rem; padding: 0.4rem 0.75rem; font-size: 0.85rem; cursor: pointer;">
-              <option value="category">Sorting Categories Order</option>
-              <option value="count">Project Count (High to Low)</option>
-              <option value="name">Alphabetical (A - Z)</option>
-            </select>
-          </div>
-        </div>
-
         <!-- Chart Layout -->
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 2rem; align-items: center;">
           <!-- Pie Chart SVG Container -->
@@ -750,16 +734,16 @@ __INITIAL_TABLE_ROWS__
             </div>
           </div>
 
-          <!-- Sorted Categories Breakdown List -->
+          <!-- Categories Breakdown List -->
           <div>
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.85rem;">
               <h3 style="font-size: 1.05rem; color: #e9d5ff;">
-                Sorted Categories Breakdown
+                Category Breakdown
               </h3>
               <span id="chart-total-count" style="font-size: 0.85rem; color: #a79fc2; font-weight: 600;"></span>
             </div>
             <div id="categories-sorted-list" style="display: flex; flex-direction: column; gap: 0.75rem;">
-              <!-- Dynamically populated sorted category cards -->
+              <!-- Dynamically populated category cards -->
             </div>
           </div>
         </div>
@@ -809,9 +793,6 @@ __INITIAL_TABLE_ROWS__
     const pieHoverInfo = document.getElementById('pie-hover-info');
     const categoriesSortedList = document.getElementById('categories-sorted-list');
     const chartTotalCount = document.getElementById('chart-total-count');
-    const chartCatChips = document.getElementById('chart-cat-chips');
-    const chartSortMode = document.getElementById('chart-sort-mode');
-    let currentChartSortMode = 'category';
 
     // Helper: Escape HTML to prevent XSS
     function escapeHtml(str) {
@@ -955,6 +936,7 @@ __INITIAL_TABLE_ROWS__
         viewTableSection.style.display = 'block';
         viewTableSection.classList.add('slide-swap-in');
       }
+      if (recordsCounter) recordsCounter.style.display = 'inline';
       if (btnViewTable) btnViewTable.classList.add('active');
       if (btnViewChart) btnViewChart.classList.remove('active');
       if (recordsCardTitle) recordsCardTitle.textContent = 'Live Database Records (SQL SELECT)';
@@ -966,6 +948,7 @@ __INITIAL_TABLE_ROWS__
         viewChartSection.style.display = 'block';
         viewChartSection.classList.add('slide-swap-in');
       }
+      if (recordsCounter) recordsCounter.style.display = 'none';
       if (btnViewChart) btnViewChart.classList.add('active');
       if (btnViewTable) btnViewTable.classList.remove('active');
       if (recordsCardTitle) recordsCardTitle.textContent = 'Category Distribution Analytics';
@@ -997,82 +980,28 @@ __INITIAL_TABLE_ROWS__
       return idx === -1 ? (100 + (name ? name.charCodeAt(0) : 0)) : idx;
     }
 
-    // Render Sorting Category Chips inside the Pie Chart view
-    function renderChartCatChips() {
-      if (!chartCatChips) return;
-      const chipOptions = ['All', ...sortingCategories];
-      chartCatChips.innerHTML = chipOptions.map(cat => {
-        const count = cat === 'All'
-          ? allProjects.length
-          : allProjects.filter(p => p.technology === cat).length;
-        const isActive = selectedTech === cat;
-        const activeClass = isActive ? 'active' : '';
-        return '<button type="button" class="cat-chip ' + activeClass + '" data-tech="' + cat + '">' +
-               '<span>' + cat + '</span>' +
-               '<span class="chip-count">' + count + '</span>' +
-               '</button>';
-      }).join('');
-    }
 
-    if (chartCatChips) {
-      chartCatChips.addEventListener('click', (e) => {
-        const btn = e.target.closest('.cat-chip');
-        if (!btn) return;
-        const cat = btn.getAttribute('data-tech');
-        if (cat) {
-          selectedTech = cat;
-          renderSortMenu();
-          renderTable();
-          renderChartCatChips();
-          renderPieChart();
-        }
-      });
-    }
-
-    if (chartSortMode) {
-      chartSortMode.addEventListener('change', (e) => {
-        currentChartSortMode = e.target.value;
-        renderPieChart();
-      });
-    }
-
-    // Render Pie Chart & Sorted Category Breakdown based on Sorting Categories
+    // Render Pie Chart & Category Breakdown sorted by categories
     function renderPieChart() {
-      renderChartCatChips();
-
       const counts = {};
       allProjects.forEach(p => {
         const cat = p.technology || 'Uncategorized';
         counts[cat] = (counts[cat] || 0) + 1;
       });
 
-      // Include all predefined sorting categories, plus any other categories in projects
+      // Include all predefined categories, plus any other categories in projects
       const allCategoryNames = Array.from(new Set([...sortingCategories, ...Object.keys(counts)]));
 
-      // Build data objects
+      // Build data objects sorted strictly by the predefined categories order
       let sortedCategories = allCategoryNames.map(cat => ({
         name: cat,
         count: counts[cat] || 0
       }));
-
-      // Sort based on currentChartSortMode
-      if (currentChartSortMode === 'category') {
-        // Sorted strictly based on the sorting categories order
-        sortedCategories.sort((a, b) => getCategoryRank(a.name) - getCategoryRank(b.name));
-      } else if (currentChartSortMode === 'count') {
-        sortedCategories.sort((a, b) => b.count - a.count || getCategoryRank(a.name) - getCategoryRank(b.name));
-      } else if (currentChartSortMode === 'name') {
-        sortedCategories.sort((a, b) => a.name.localeCompare(b.name));
-      }
+      sortedCategories.sort((a, b) => getCategoryRank(a.name) - getCategoryRank(b.name));
 
       const total = allProjects.length;
       if (chartTotalCount) {
-        if (selectedTech === 'All') {
-          chartTotalCount.textContent = 'Total: ' + total + ' project' + (total === 1 ? '' : 's');
-        } else {
-          const catCount = counts[selectedTech] || 0;
-          chartTotalCount.textContent = selectedTech + ': ' + catCount + ' of ' + total;
-        }
+        chartTotalCount.textContent = 'Total: ' + total + ' project' + (total === 1 ? '' : 's');
       }
 
       if (total === 0) {
