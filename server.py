@@ -474,30 +474,12 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
       color: white;
       box-shadow: 0 0 14px rgba(124, 58, 237, 0.45);
     }
-    .slider-viewport {
-      width: 100%;
-      overflow: hidden;
-      position: relative;
+    @keyframes slideSwap {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
     }
-    .slider-track {
-      display: flex;
-      width: 200%;
-      transition: transform 0.55s cubic-bezier(0.25, 1, 0.5, 1);
-      align-items: flex-start;
-    }
-    .slider-track.show-chart {
-      transform: translateX(-50%);
-    }
-    .slide-pane {
-      width: 50%;
-      flex-shrink: 0;
-      box-sizing: border-box;
-    }
-    #pane-projects {
-      padding-right: 0.5rem;
-    }
-    #pane-chart {
-      padding-left: 0.5rem;
+    .slide-swap-in {
+      animation: slideSwap 0.28s ease-out;
     }
     .pie-slice {
       transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s, filter 0.2s;
@@ -565,23 +547,14 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
           Python Backend (HTTP REST) + SQL Database (SQLite) + Interactive UI
         </p>
       </div>
-      <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
-        <div class="view-toggle-bar">
-          <button type="button" id="btn-view-projects" class="view-toggle-btn active" title="View project records">
-            📋 Projects
-          </button>
-          <button type="button" id="btn-view-chart" class="view-toggle-btn" title="Slide to category pie chart view">
-            📊 Category Chart
-          </button>
-        </div>
+      <div class="badges">
+        <span class="badge badge-py">Python 3</span>
+        <span class="badge badge-sql">SQLite SQL</span>
+        <span class="badge badge-react">Interactive UI</span>
       </div>
     </header>
 
-    <div class="slider-viewport">
-      <div id="slider-track" class="slider-track">
-        <!-- Slide 1: Main Projects View -->
-        <div class="slide-pane" id="pane-projects">
-          <!-- Project Management Card: 2 Sub-Parts (Add New / Edit Existing) -->
+    <!-- Project Management Card: 2 Sub-Parts (Add New / Edit Existing) -->
     <div class="card">
       <div style="display: flex; gap: 0.5rem; margin-bottom: 1.25rem; border-bottom: 1px solid #2e264f; padding-bottom: 0.75rem;">
         <button type="button" id="tab-add" class="tab-btn active" style="flex: 1;">
@@ -670,8 +643,18 @@ __INITIAL_EDIT_OPTIONS__
     <!-- Live Database Records with Search -->
     <div class="card">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem;">
-        <h2>Live Database Records (SQL SELECT)</h2>
-        <span id="records-counter" style="font-size: 0.85rem; color: #94a3b8;">__INITIAL_COUNTER__</span>
+        <h2 id="records-card-title">Live Database Records (SQL SELECT)</h2>
+        <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
+          <span id="records-counter" style="font-size: 0.85rem; color: #94a3b8;">__INITIAL_COUNTER__</span>
+          <div class="view-toggle-bar">
+            <button type="button" id="btn-view-table" class="view-toggle-btn active" title="Show Database Table">
+              📋 Table
+            </button>
+            <button type="button" id="btn-view-chart" class="view-toggle-btn" title="Display Category Pie Chart instead of Table">
+              📊 Category Chart
+            </button>
+          </div>
+        </div>
       </div>
 
       <!-- Search & Sort Controls -->
@@ -709,93 +692,80 @@ __INITIAL_SORT_OPTIONS__
         </div>
       </div>
 
-      <!-- Search Meta Indicator -->
-      <div id="search-meta" class="search-meta" style="display: none;">
-        <span id="search-meta-text"></span>
-        <button type="button" class="btn-link" id="reset-filters-btn">Reset All Filters</button>
-      </div>
+      <!-- SECTION 1: Table View (Displayed by Default) -->
+      <div id="view-table-section">
+        <!-- Search Meta Indicator -->
+        <div id="search-meta" class="search-meta" style="display: none;">
+          <span id="search-meta-text"></span>
+          <button type="button" class="btn-link" id="reset-filters-btn">Reset All Filters</button>
+        </div>
 
-      <!-- Projects Table -->
-      <div class="table-container">
-        <table>
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Name</th>
-              <th>Description</th>
-              <th>Tech</th>
-              <th>Status</th>
-              <th>Action</th>
-            </tr>
-          </thead>
-          <tbody id="projects-tbody">
+        <!-- Projects Table -->
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Name</th>
+                <th>Description</th>
+                <th>Tech</th>
+                <th>Status</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="projects-tbody">
 __INITIAL_TABLE_ROWS__
-          </tbody>
-        </table>
+            </tbody>
+          </table>
         </div>
       </div>
 
-      <!-- Slide 2: Category Pie Chart View -->
-      <div class="slide-pane" id="pane-chart">
-        <div class="card">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem; flex-wrap: wrap; gap: 0.75rem; border-bottom: 1px solid #2e264f; padding-bottom: 1rem;">
-            <div>
-              <h2 style="font-size: 1.25rem; color: #e9d5ff;">📊 Category Distribution Analytics</h2>
-              <p style="color: #a79fc2; font-size: 0.85rem; margin-top: 0.2rem;">
-                Interactive pie chart with categories sorted by project count
-              </p>
+      <!-- SECTION 2: Category Pie Chart View (Only displayed when Category Chart option is clicked, instead of table) -->
+      <div id="view-chart-section" style="display: none;">
+        <!-- Sorting Categories Filter & Sort Order Bar -->
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem; flex-wrap: wrap; gap: 0.75rem; background: #120e24; padding: 0.75rem 1rem; border-radius: 0.5rem; border: 1px solid #2e264f;">
+          <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+            <span style="font-size: 0.85rem; color: #a79fc2; font-weight: 600;">Sorting Category:</span>
+            <div id="chart-cat-chips" style="display: flex; gap: 0.35rem; flex-wrap: wrap;"></div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <span style="font-size: 0.85rem; color: #a79fc2; font-weight: 600;">Sort By:</span>
+            <select id="chart-sort-mode" style="background: #1c1735; color: #f5f3ff; border: 1px solid #3b3263; border-radius: 0.4rem; padding: 0.4rem 0.75rem; font-size: 0.85rem; cursor: pointer;">
+              <option value="category">Sorting Categories Order</option>
+              <option value="count">Project Count (High to Low)</option>
+              <option value="name">Alphabetical (A - Z)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Chart Layout -->
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 2rem; align-items: center;">
+          <!-- Pie Chart SVG Container -->
+          <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 1rem;">
+            <div id="pie-chart-container" style="position: relative; width: 280px; height: 280px; display: flex; align-items: center; justify-content: center;">
+              <!-- Rendered dynamically -->
             </div>
-            <button type="button" id="btn-back-to-projects" class="btn-sort" style="font-size: 0.85rem; padding: 0.55rem 1rem;">
-              ← Slide Back to Projects
-            </button>
+            <div id="pie-hover-info" style="margin-top: 1rem; min-height: 24px; font-size: 0.9rem; color: #c084fc; font-weight: 600; text-align: center;">
+              Hover over or click a slice for details
+            </div>
           </div>
 
-          <!-- Sorting Categories Filter & Sort Order Bar -->
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem; flex-wrap: wrap; gap: 0.75rem; background: #120e24; padding: 0.75rem 1rem; border-radius: 0.5rem; border: 1px solid #2e264f;">
-            <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
-              <span style="font-size: 0.85rem; color: #a79fc2; font-weight: 600;">Sorting Category:</span>
-              <div id="chart-cat-chips" style="display: flex; gap: 0.35rem; flex-wrap: wrap;"></div>
+          <!-- Sorted Categories Breakdown List -->
+          <div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.85rem;">
+              <h3 style="font-size: 1.05rem; color: #e9d5ff;">
+                Sorted Categories Breakdown
+              </h3>
+              <span id="chart-total-count" style="font-size: 0.85rem; color: #a79fc2; font-weight: 600;"></span>
             </div>
-            <div style="display: flex; align-items: center; gap: 0.5rem;">
-              <span style="font-size: 0.85rem; color: #a79fc2; font-weight: 600;">Sort By:</span>
-              <select id="chart-sort-mode" style="background: #1c1735; color: #f5f3ff; border: 1px solid #3b3263; border-radius: 0.4rem; padding: 0.4rem 0.75rem; font-size: 0.85rem; cursor: pointer;">
-                <option value="category">Sorting Categories Order</option>
-                <option value="count">Project Count (High to Low)</option>
-                <option value="name">Alphabetical (A - Z)</option>
-              </select>
-            </div>
-          </div>
-
-          <!-- Chart Layout -->
-          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 2rem; align-items: center;">
-            <!-- Pie Chart SVG Container -->
-            <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 1rem;">
-              <div id="pie-chart-container" style="position: relative; width: 280px; height: 280px; display: flex; align-items: center; justify-content: center;">
-                <!-- Rendered dynamically -->
-              </div>
-              <div id="pie-hover-info" style="margin-top: 1rem; min-height: 24px; font-size: 0.9rem; color: #c084fc; font-weight: 600; text-align: center;">
-                Hover over or click a slice for details
-              </div>
-            </div>
-
-            <!-- Sorted Categories Breakdown List -->
-            <div>
-              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.85rem;">
-                <h3 style="font-size: 1.05rem; color: #e9d5ff;">
-                  Sorted Categories Breakdown
-                </h3>
-                <span id="chart-total-count" style="font-size: 0.85rem; color: #a79fc2; font-weight: 600;"></span>
-              </div>
-              <div id="categories-sorted-list" style="display: flex; flex-direction: column; gap: 0.75rem;">
-                <!-- Dynamically populated sorted category cards -->
-              </div>
+            <div id="categories-sorted-list" style="display: flex; flex-direction: column; gap: 0.75rem;">
+              <!-- Dynamically populated sorted category cards -->
             </div>
           </div>
         </div>
       </div>
     </div>
   </div>
-</div>
 
   <script>
     // State pre-populated immediately from SQLite
@@ -830,10 +800,11 @@ __INITIAL_TABLE_ROWS__
     const editTech = document.getElementById('edit-tech');
     const editStatus = document.getElementById('edit-status');
     const btnUpdate = document.getElementById('btn-update');
-    const sliderTrack = document.getElementById('slider-track');
-    const btnViewProjects = document.getElementById('btn-view-projects');
+    const btnViewTable = document.getElementById('btn-view-table');
     const btnViewChart = document.getElementById('btn-view-chart');
-    const btnBackToProjects = document.getElementById('btn-back-to-projects');
+    const viewTableSection = document.getElementById('view-table-section');
+    const viewChartSection = document.getElementById('view-chart-section');
+    const recordsCardTitle = document.getElementById('records-card-title');
     const pieChartContainer = document.getElementById('pie-chart-container');
     const pieHoverInfo = document.getElementById('pie-hover-info');
     const categoriesSortedList = document.getElementById('categories-sorted-list');
@@ -977,23 +948,32 @@ __INITIAL_TABLE_ROWS__
       editName.focus();
     });
 
-    // Slider Navigation Handlers
-    function slideToProjects() {
-      sliderTrack.classList.remove('show-chart');
-      btnViewProjects.classList.add('active');
-      btnViewChart.classList.remove('active');
+    // View Toggle Handlers (Table vs. Category Pie Chart)
+    function showTableView() {
+      if (viewChartSection) viewChartSection.style.display = 'none';
+      if (viewTableSection) {
+        viewTableSection.style.display = 'block';
+        viewTableSection.classList.add('slide-swap-in');
+      }
+      if (btnViewTable) btnViewTable.classList.add('active');
+      if (btnViewChart) btnViewChart.classList.remove('active');
+      if (recordsCardTitle) recordsCardTitle.textContent = 'Live Database Records (SQL SELECT)';
     }
 
-    function slideToChart() {
-      sliderTrack.classList.add('show-chart');
-      btnViewChart.classList.add('active');
-      btnViewProjects.classList.remove('active');
+    function showChartView() {
+      if (viewTableSection) viewTableSection.style.display = 'none';
+      if (viewChartSection) {
+        viewChartSection.style.display = 'block';
+        viewChartSection.classList.add('slide-swap-in');
+      }
+      if (btnViewChart) btnViewChart.classList.add('active');
+      if (btnViewTable) btnViewTable.classList.remove('active');
+      if (recordsCardTitle) recordsCardTitle.textContent = 'Category Distribution Analytics';
       renderPieChart();
     }
 
-    btnViewProjects.addEventListener('click', slideToProjects);
-    btnViewChart.addEventListener('click', slideToChart);
-    btnBackToProjects.addEventListener('click', slideToProjects);
+    if (btnViewTable) btnViewTable.addEventListener('click', showTableView);
+    if (btnViewChart) btnViewChart.addEventListener('click', showChartView);
 
     // Sorting categories configuration matching the Sort menu
     const sortingCategories = ['Python', 'SQL', 'React', 'Fullstack'];
@@ -1209,7 +1189,7 @@ __INITIAL_TABLE_ROWS__
       categoriesSortedList.innerHTML = cardsHtml;
     }
 
-    // Filter table by technology and slide back to table
+    // Filter table by technology and switch back to table view
     function filterByTechAndSlide(tech) {
       selectedTech = tech;
       searchQuery = '';
@@ -1217,7 +1197,7 @@ __INITIAL_TABLE_ROWS__
       clearSearchBtn.style.display = 'none';
       renderSortMenu();
       renderTable();
-      slideToProjects();
+      showTableView();
     }
 
     // Pie chart slice interactions
