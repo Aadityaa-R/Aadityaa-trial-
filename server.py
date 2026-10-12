@@ -443,6 +443,86 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     .new-row-flash {
       animation: rowHighlight 2.5s ease-out;
     }
+    .view-toggle-bar {
+      display: inline-flex;
+      background: #1c1735;
+      padding: 0.3rem;
+      border-radius: 0.6rem;
+      border: 1px solid #2e264f;
+      gap: 0.35rem;
+    }
+    .view-toggle-btn {
+      background: transparent;
+      color: #a79fc2;
+      border: none;
+      padding: 0.55rem 1.1rem;
+      border-radius: 0.45rem;
+      font-weight: 600;
+      font-size: 0.9rem;
+      cursor: pointer;
+      transition: all 0.25s ease;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+    .view-toggle-btn:hover {
+      color: #f5f3ff;
+      background: rgba(168, 85, 247, 0.15);
+    }
+    .view-toggle-btn.active {
+      background: #7c3aed;
+      color: white;
+      box-shadow: 0 0 14px rgba(124, 58, 237, 0.45);
+    }
+    .slider-viewport {
+      width: 100%;
+      overflow: hidden;
+      position: relative;
+    }
+    .slider-track {
+      display: flex;
+      width: 200%;
+      transition: transform 0.55s cubic-bezier(0.25, 1, 0.5, 1);
+      align-items: flex-start;
+    }
+    .slider-track.show-chart {
+      transform: translateX(-50%);
+    }
+    .slide-pane {
+      width: 50%;
+      flex-shrink: 0;
+      box-sizing: border-box;
+    }
+    #pane-projects {
+      padding-right: 0.5rem;
+    }
+    #pane-chart {
+      padding-left: 0.5rem;
+    }
+    .pie-slice {
+      transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s, filter 0.2s;
+      cursor: pointer;
+      transform-origin: 140px 140px;
+    }
+    .pie-slice:hover {
+      opacity: 0.9;
+      transform: scale(1.05);
+      filter: drop-shadow(0 0 8px rgba(192, 132, 252, 0.5));
+    }
+    .category-card {
+      background: #120e24;
+      border: 1px solid #2e264f;
+      border-radius: 0.5rem;
+      padding: 0.85rem 1rem;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .category-card:hover {
+      background: #191336;
+      border-color: #a855f7;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(168, 85, 247, 0.2);
+    }
   </style>
 </head>
 <body>
@@ -454,14 +534,23 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
           Python Backend (HTTP REST) + SQL Database (SQLite) + Interactive UI
         </p>
       </div>
-      <div class="badges">
-        <span class="badge badge-py">Python 3</span>
-        <span class="badge badge-sql">SQLite SQL</span>
-        <span class="badge badge-react">Interactive UI</span>
+      <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+        <div class="view-toggle-bar">
+          <button type="button" id="btn-view-projects" class="view-toggle-btn active" title="View project records">
+            📋 Projects
+          </button>
+          <button type="button" id="btn-view-chart" class="view-toggle-btn" title="Slide to category pie chart view">
+            📊 Category Chart
+          </button>
+        </div>
       </div>
     </header>
 
-    <!-- Project Management Card: 2 Sub-Parts (Add New / Edit Existing) -->
+    <div class="slider-viewport">
+      <div id="slider-track" class="slider-track">
+        <!-- Slide 1: Main Projects View -->
+        <div class="slide-pane" id="pane-projects">
+          <!-- Project Management Card: 2 Sub-Parts (Add New / Edit Existing) -->
     <div class="card">
       <div style="display: flex; gap: 0.5rem; margin-bottom: 1.25rem; border-bottom: 1px solid #2e264f; padding-bottom: 0.75rem;">
         <button type="button" id="tab-add" class="tab-btn active" style="flex: 1;">
@@ -612,9 +701,54 @@ __INITIAL_SORT_OPTIONS__
 __INITIAL_TABLE_ROWS__
           </tbody>
         </table>
+        </div>
+      </div>
+
+      <!-- Slide 2: Category Pie Chart View -->
+      <div class="slide-pane" id="pane-chart">
+        <div class="card">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem; flex-wrap: wrap; gap: 0.75rem; border-bottom: 1px solid #2e264f; padding-bottom: 1rem;">
+            <div>
+              <h2 style="font-size: 1.25rem; color: #e9d5ff;">📊 Category Distribution Analytics</h2>
+              <p style="color: #a79fc2; font-size: 0.85rem; margin-top: 0.2rem;">
+                Interactive pie chart with categories sorted by project count
+              </p>
+            </div>
+            <button type="button" id="btn-back-to-projects" class="btn-sort" style="font-size: 0.85rem; padding: 0.55rem 1rem;">
+              ← Slide Back to Projects
+            </button>
+          </div>
+
+          <!-- Chart Layout -->
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 2rem; align-items: center;">
+            <!-- Pie Chart SVG Container -->
+            <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 1rem;">
+              <div id="pie-chart-container" style="position: relative; width: 280px; height: 280px; display: flex; align-items: center; justify-content: center;">
+                <!-- Rendered dynamically -->
+              </div>
+              <div id="pie-hover-info" style="margin-top: 1rem; min-height: 24px; font-size: 0.9rem; color: #c084fc; font-weight: 600; text-align: center;">
+                Hover over or click a slice for details
+              </div>
+            </div>
+
+            <!-- Sorted Categories Breakdown List -->
+            <div>
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.85rem;">
+                <h3 style="font-size: 1.05rem; color: #e9d5ff;">
+                  Sorted Categories Breakdown
+                </h3>
+                <span id="chart-total-count" style="font-size: 0.85rem; color: #a79fc2; font-weight: 600;"></span>
+              </div>
+              <div id="categories-sorted-list" style="display: flex; flex-direction: column; gap: 0.75rem;">
+                <!-- Dynamically populated sorted category cards -->
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
+</div>
 
   <script>
     // State pre-populated immediately from SQLite
@@ -649,6 +783,14 @@ __INITIAL_TABLE_ROWS__
     const editTech = document.getElementById('edit-tech');
     const editStatus = document.getElementById('edit-status');
     const btnUpdate = document.getElementById('btn-update');
+    const sliderTrack = document.getElementById('slider-track');
+    const btnViewProjects = document.getElementById('btn-view-projects');
+    const btnViewChart = document.getElementById('btn-view-chart');
+    const btnBackToProjects = document.getElementById('btn-back-to-projects');
+    const pieChartContainer = document.getElementById('pie-chart-container');
+    const pieHoverInfo = document.getElementById('pie-hover-info');
+    const categoriesSortedList = document.getElementById('categories-sorted-list');
+    const chartTotalCount = document.getElementById('chart-total-count');
 
     // Helper: Escape HTML to prevent XSS
     function escapeHtml(str) {
@@ -783,6 +925,192 @@ __INITIAL_TABLE_ROWS__
       panelEdit.style.display = 'block';
       populateEditSelect();
       editName.focus();
+    });
+
+    // Slider Navigation Handlers
+    function slideToProjects() {
+      sliderTrack.classList.remove('show-chart');
+      btnViewProjects.classList.add('active');
+      btnViewChart.classList.remove('active');
+    }
+
+    function slideToChart() {
+      sliderTrack.classList.add('show-chart');
+      btnViewChart.classList.add('active');
+      btnViewProjects.classList.remove('active');
+      renderPieChart();
+    }
+
+    btnViewProjects.addEventListener('click', slideToProjects);
+    btnViewChart.addEventListener('click', slideToChart);
+    btnBackToProjects.addEventListener('click', slideToProjects);
+
+    // Color mapping for Pie Chart & Category Cards
+    const categoryColorMap = {
+      'Python': '#8b5cf6',
+      'SQL': '#f59e0b',
+      'React': '#c084fc',
+      'Fullstack': '#10b981'
+    };
+    const defaultColorList = ['#8b5cf6', '#f59e0b', '#c084fc', '#10b981', '#06b6d4', '#ec4899', '#3b82f6', '#14b8a6'];
+
+    function getCategoryColor(cat, idx) {
+      if (categoryColorMap[cat]) return categoryColorMap[cat];
+      return defaultColorList[idx % defaultColorList.length];
+    }
+
+    // Render Pie Chart & Sorted Category Breakdown
+    function renderPieChart() {
+      const counts = {};
+      allProjects.forEach(p => {
+        const cat = p.technology || 'Uncategorized';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+
+      const sortedCategories = Object.keys(counts)
+        .map(cat => ({ name: cat, count: counts[cat] }))
+        .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+
+      const total = allProjects.length;
+      if (chartTotalCount) {
+        chartTotalCount.textContent = 'Total: ' + total + ' project' + (total === 1 ? '' : 's');
+      }
+
+      if (total === 0) {
+        pieChartContainer.innerHTML = '<svg viewBox="0 0 280 280" width="260" height="260">' +
+          '<circle cx="140" cy="140" r="95" fill="none" stroke="#2e264f" stroke-width="25" />' +
+          '<text x="140" y="145" text-anchor="middle" font-size="14" fill="#a79fc2">No Projects</text>' +
+          '</svg>';
+        categoriesSortedList.innerHTML = '<div style="color: #a79fc2; padding: 1.5rem; text-align: center;">No projects in database yet. Add a project to view category statistics.</div>';
+        pieHoverInfo.textContent = 'No project data available';
+        return;
+      }
+
+      const cx = 140, cy = 140, r = 110, rInner = 58;
+      let currentAngle = -Math.PI / 2;
+      const slices = sortedCategories.map((d, idx) => {
+        const fraction = d.count / total;
+        const percent = Math.round(fraction * 1000) / 10;
+        const color = getCategoryColor(d.name, idx);
+        const angle = fraction * 2 * Math.PI;
+        const startAngle = currentAngle;
+        const endAngle = currentAngle + angle;
+        currentAngle = endAngle;
+
+        let path = '';
+        if (sortedCategories.length === 1 || fraction >= 0.9999) {
+          path = 'M ' + cx + ' ' + (cy - r) +
+                 ' A ' + r + ' ' + r + ' 0 1 1 ' + cx + ' ' + (cy + r) +
+                 ' A ' + r + ' ' + r + ' 0 1 1 ' + cx + ' ' + (cy - r) +
+                 ' M ' + cx + ' ' + (cy - rInner) +
+                 ' A ' + rInner + ' ' + rInner + ' 0 1 0 ' + cx + ' ' + (cy + rInner) +
+                 ' A ' + rInner + ' ' + rInner + ' 0 1 0 ' + cx + ' ' + (cy - rInner) + ' Z';
+        } else {
+          const x1 = cx + r * Math.cos(startAngle);
+          const y1 = cy + r * Math.sin(startAngle);
+          const x2 = cx + r * Math.cos(endAngle);
+          const y2 = cy + r * Math.sin(endAngle);
+          const x3 = cx + rInner * Math.cos(endAngle);
+          const y3 = cy + rInner * Math.sin(endAngle);
+          const x4 = cx + rInner * Math.cos(startAngle);
+          const y4 = cy + rInner * Math.sin(startAngle);
+          const largeArc = angle > Math.PI ? 1 : 0;
+          path = 'M ' + x1 + ' ' + y1 +
+                 ' A ' + r + ' ' + r + ' 0 ' + largeArc + ' 1 ' + x2 + ' ' + y2 +
+                 ' L ' + x3 + ' ' + y3 +
+                 ' A ' + rInner + ' ' + rInner + ' 0 ' + largeArc + ' 0 ' + x4 + ' ' + y4 + ' Z';
+        }
+
+        return {
+          name: d.name,
+          count: d.count,
+          percent: percent,
+          color: color,
+          path: path
+        };
+      });
+
+      let svgHtml = '<svg viewBox="0 0 280 280" width="280" height="280">';
+      slices.forEach((s) => {
+        svgHtml += '<path class="pie-slice" data-cat="' + escapeHtml(s.name) + '" data-count="' + s.count + '" data-pct="' + s.percent + '" fill="' + s.color + '" stroke="#1c1735" stroke-width="2" d="' + s.path + '"></path>';
+      });
+      svgHtml += '<circle cx="' + cx + '" cy="' + cy + '" r="' + (rInner - 2) + '" fill="#120e24" />' +
+                 '<text x="' + cx + '" y="' + (cy - 4) + '" text-anchor="middle" font-size="24" font-weight="700" fill="#f5f3ff">' + total + '</text>' +
+                 '<text x="' + cx + '" y="' + (cy + 16) + '" text-anchor="middle" font-size="10" font-weight="600" fill="#a79fc2" letter-spacing="1">PROJECTS</text>' +
+                 '</svg>';
+
+      pieChartContainer.innerHTML = svgHtml;
+
+      let cardsHtml = '';
+      slices.forEach((s, idx) => {
+        cardsHtml += '<div class="category-card" data-tech="' + escapeHtml(s.name) + '">' +
+          '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.45rem;">' +
+            '<div style="display: flex; align-items: center; gap: 0.5rem;">' +
+              '<span style="font-size: 0.75rem; font-weight: 700; color: #a79fc2; background: #1c1735; padding: 0.15rem 0.45rem; border-radius: 0.25rem;">#' + (idx + 1) + '</span>' +
+              '<span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: ' + s.color + ';"></span>' +
+              '<strong style="color: #f5f3ff;">' + escapeHtml(s.name) + '</strong>' +
+            '</div>' +
+            '<div>' +
+              '<span style="font-weight: 700; color: #c084fc;">' + s.count + ' project' + (s.count === 1 ? '' : 's') + '</span>' +
+              '<span style="color: #a79fc2; font-size: 0.85rem; margin-left: 0.4rem;">(' + s.percent + '%)</span>' +
+            '</div>' +
+          '</div>' +
+          '<div style="width: 100%; height: 6px; background: #0c0919; border-radius: 3px; overflow: hidden;">' +
+            '<div style="width: ' + s.percent + '%; height: 100%; background: ' + s.color + '; border-radius: 3px; transition: width 0.4s ease;"></div>' +
+          '</div>' +
+          '<div style="text-align: right; margin-top: 0.35rem;">' +
+            '<span style="font-size: 0.75rem; color: #a79fc2;">Click to filter table by ' + escapeHtml(s.name) + ' →</span>' +
+          '</div>' +
+        '</div>';
+      });
+
+      categoriesSortedList.innerHTML = cardsHtml;
+    }
+
+    // Filter table by technology and slide back to table
+    function filterByTechAndSlide(tech) {
+      selectedTech = tech;
+      searchQuery = '';
+      searchInput.value = '';
+      clearSearchBtn.style.display = 'none';
+      renderSortMenu();
+      renderTable();
+      slideToProjects();
+    }
+
+    // Pie chart slice interactions
+    pieChartContainer.addEventListener('mouseover', (e) => {
+      const slice = e.target.closest('.pie-slice');
+      if (slice) {
+        const cat = slice.getAttribute('data-cat');
+        const count = slice.getAttribute('data-count');
+        const pct = slice.getAttribute('data-pct');
+        pieHoverInfo.textContent = cat + ': ' + count + ' project' + (count === '1' ? '' : 's') + ' (' + pct + '%)';
+      }
+    });
+
+    pieChartContainer.addEventListener('mouseout', (e) => {
+      const slice = e.target.closest('.pie-slice');
+      if (slice) {
+        pieHoverInfo.textContent = 'Hover over or click a slice for details';
+      }
+    });
+
+    pieChartContainer.addEventListener('click', (e) => {
+      const slice = e.target.closest('.pie-slice');
+      if (slice) {
+        const cat = slice.getAttribute('data-cat');
+        if (cat) filterByTechAndSlide(cat);
+      }
+    });
+
+    // Category card click
+    categoriesSortedList.addEventListener('click', (e) => {
+      const card = e.target.closest('.category-card');
+      if (card) {
+        const cat = card.getAttribute('data-tech');
+        if (cat) filterByTechAndSlide(cat);
+      }
     });
 
     // Render Projects Table
@@ -930,6 +1258,7 @@ __INITIAL_TABLE_ROWS__
         renderTable();
         renderSortMenu();
         populateEditSelect(editSelect.value);
+        renderPieChart();
       } catch (err) {
         console.error('Error fetching projects:', err);
         projectsTbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#ef4444; padding:2rem;">Error connecting to Python backend.</td></tr>';
@@ -988,6 +1317,7 @@ __INITIAL_TABLE_ROWS__
       renderSortMenu();
       renderTable();
       populateEditSelect(newRecord.id);
+      renderPieChart();
 
       // Asynchronously persist to SQLite in background
       try {
@@ -1003,6 +1333,7 @@ __INITIAL_TABLE_ROWS__
           allProjects.sort((a, b) => Number(b.id) - Number(a.id));
           renderTable();
           populateEditSelect(data.id);
+          renderPieChart();
         }
       } catch (err) {
         // Rollback on failure
@@ -1011,6 +1342,7 @@ __INITIAL_TABLE_ROWS__
         renderSortMenu();
         renderTable();
         populateEditSelect();
+        renderPieChart();
         alert('Error saving project to database: ' + err.message);
       }
     });
@@ -1049,6 +1381,7 @@ __INITIAL_TABLE_ROWS__
       renderSortMenu();
       renderTable();
       populateEditSelect(id);
+      renderPieChart();
 
       // Save button visual feedback
       btnUpdate.textContent = '✓ Saved!';
@@ -1071,6 +1404,7 @@ __INITIAL_TABLE_ROWS__
         renderSortMenu();
         renderTable();
         populateEditSelect(id);
+        renderPieChart();
         alert('Error updating project: ' + err.message);
       }
     });
@@ -1082,6 +1416,7 @@ __INITIAL_TABLE_ROWS__
       renderSortMenu();
       renderTable();
       populateEditSelect();
+      renderPieChart();
 
       try {
         const res = await fetch('/api/projects/' + id, { method: 'DELETE' });
@@ -1091,6 +1426,7 @@ __INITIAL_TABLE_ROWS__
         renderSortMenu();
         renderTable();
         populateEditSelect();
+        renderPieChart();
         alert('Error deleting project: ' + err.message);
       }
     }
@@ -1099,6 +1435,7 @@ __INITIAL_TABLE_ROWS__
     renderSortMenu();
     renderTable();
     populateEditSelect();
+    renderPieChart();
 
     // Background live refreshes
     fetchProjects();
