@@ -12,7 +12,7 @@ import json
 import sqlite3
 import os
 import urllib.parse
-import html
+from html import escape as html_escape
 
 PORT = int(os.environ.get("PORT", 5050))
 DB_FILE = os.path.join(os.path.dirname(__file__), "database.db")
@@ -77,47 +77,54 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
+        try:
+            parsed = urllib.parse.urlparse(self.path)
+            path = parsed.path
 
-        if path == "/" or path == "/index.html":
-            self.serve_react_app()
-        elif path == "/api/projects":
-            conn = sqlite3.connect(DB_FILE)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
+            if path == "/" or path == "/index.html":
+                self.serve_react_app()
+            elif path == "/api/projects":
+                conn = sqlite3.connect(DB_FILE)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
 
-            # Parse query parameters for SQL search (e.g. ?q=login&tech=Python)
-            params = urllib.parse.parse_qs(parsed.query)
-            q = params.get("q", [""])[0].strip()
-            tech = params.get("tech", [""])[0].strip()
+                # Parse query parameters for SQL search (e.g. ?q=login&tech=Python)
+                params = urllib.parse.parse_qs(parsed.query)
+                q = params.get("q", [""])[0].strip()
+                tech = params.get("tech", [""])[0].strip()
 
-            sql = "SELECT * FROM projects WHERE 1=1"
-            args = []
-            if q:
-                sql += " AND (name LIKE ? OR description LIKE ?)"
-                pattern = f"%{q}%"
-                args.extend([pattern, pattern])
-            if tech and tech != "All":
-                sql += " AND technology = ?"
-                args.append(tech)
-            sql += " ORDER BY id DESC"
+                sql = "SELECT * FROM projects WHERE 1=1"
+                args = []
+                if q:
+                    sql += " AND (name LIKE ? OR description LIKE ?)"
+                    pattern = f"%{q}%"
+                    args.extend([pattern, pattern])
+                if tech and tech != "All":
+                    sql += " AND technology = ?"
+                    args.append(tech)
+                sql += " ORDER BY id DESC"
 
-            cursor.execute(sql, args)
-            rows = [dict(row) for row in cursor.fetchall()]
-            conn.close()
-            self._send_json(200, rows)
-        elif path == "/api/stats":
-            conn = sqlite3.connect(DB_FILE)
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM projects")
-            total = cursor.fetchone()[0]
-            cursor.execute("SELECT status, COUNT(*) FROM projects GROUP BY status")
-            status_counts = dict(cursor.fetchall())
-            conn.close()
-            self._send_json(200, {"total": total, "by_status": status_counts})
-        else:
-            self.send_error(404, "Not Found")
+                cursor.execute(sql, args)
+                rows = [dict(row) for row in cursor.fetchall()]
+                conn.close()
+                self._send_json(200, rows)
+            elif path == "/api/stats":
+                conn = sqlite3.connect(DB_FILE)
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM projects")
+                total = cursor.fetchone()[0]
+                cursor.execute("SELECT status, COUNT(*) FROM projects GROUP BY status")
+                status_counts = dict(cursor.fetchall())
+                conn.close()
+                self._send_json(200, {"total": total, "by_status": status_counts})
+            else:
+                self.send_error(404, "Not Found")
+        except Exception as e:
+            print(f"Server error on GET {self.path}: {e}")
+            try:
+                self.send_error(500, f"Server Error: {e}")
+            except Exception:
+                pass
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -203,31 +210,38 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         initial_json = json.dumps(initial_projects)
 
         # Pre-build table rows HTML so page is fully populated with all records on load
-        if initial_projects:
-            rows_html = "".join([
+        row_items = []
+        for p in initial_projects:
+            pid = p["id"]
+            pname = html_escape(str(p["name"]))
+            pdesc = html_escape(str(p.get("description") or ""))
+            ptech = html_escape(str(p["technology"]))
+            pstatus = html_escape(str(p["status"]))
+            row_items.append(
                 f'<tr>'
-                f'<td>#{p["id"]}</td>'
-                f'<td style="font-weight: 600;">{html.escape(str(p["name"]))}</td>'
-                f'<td style="color: #94a3b8;">{html.escape(str(p.get("description") or ""))}</td>'
-                f'<td><span class="badge badge-py">{html.escape(str(p["technology"]))}</span></td>'
-                f'<td><span class="status-badge">{html.escape(str(p["status"]))}</span></td>'
-                f'<td><button type="button" class="btn-danger" data-id="{p["id"]}">Delete</button></td>'
+                f'<td>#{pid}</td>'
+                f'<td style="font-weight: 600;">{pname}</td>'
+                f'<td style="color: #94a3b8;">{pdesc}</td>'
+                f'<td><span class="badge badge-py">{ptech}</span></td>'
+                f'<td><span class="status-badge">{pstatus}</span></td>'
+                f'<td><button type="button" class="btn-danger" data-id="{pid}">Delete</button></td>'
                 f'</tr>'
-                for p in initial_projects
-            ])
-        else:
-            rows_html = '<tr><td colspan="6" style="text-align: center; color: #64748b; padding: 2rem;">No records found in database.</td></tr>'
+            )
+        rows_html = "".join(row_items) if row_items else '<tr><td colspan="6" style="text-align: center; color: #64748b; padding: 2rem;">No records found in database.</td></tr>'
 
         tech_opts = ['All', 'Python', 'SQL', 'React', 'Fullstack']
-        chips_html = "".join([
-            f'<button type="button" class="chip {"active" if t == "All" else ""}" data-tech="{t}">'
-            f'{t} ({len(initial_projects) if t == "All" else len([p for p in initial_projects if p.get("technology") == t])})'
-            f'</button>'
-            for t in tech_opts
-        ])
+        chip_items = []
+        for t in tech_opts:
+            if t == 'All':
+                count = len(initial_projects)
+            else:
+                count = sum(1 for p in initial_projects if p.get('technology') == t)
+            active = "active" if t == "All" else ""
+            chip_items.append(f'<button type="button" class="chip {active}" data-tech="{t}">{t} ({count})</button>')
+        chips_html = "".join(chip_items)
         counter_text = f"Showing all {len(initial_projects)} records"
 
-        html = """<!DOCTYPE html>
+        page_template = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -685,13 +699,13 @@ __INITIAL_TABLE_ROWS__
 </body>
 </html>
 """
-        html = (html
-                .replace("__INITIAL_PROJECTS__", initial_json)
-                .replace("__TOTAL_COUNT__", str(total_count))
-                .replace("__INITIAL_TABLE_ROWS__", rows_html)
-                .replace("__INITIAL_CHIPS__", chips_html)
-                .replace("__INITIAL_COUNTER__", counter_text))
-        body = html.encode("utf-8")
+        page_html = (page_template
+                     .replace("__INITIAL_PROJECTS__", initial_json)
+                     .replace("__TOTAL_COUNT__", str(total_count))
+                     .replace("__INITIAL_TABLE_ROWS__", rows_html)
+                     .replace("__INITIAL_CHIPS__", chips_html)
+                     .replace("__INITIAL_COUNTER__", counter_text))
+        body = page_html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
