@@ -236,6 +236,13 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 self._send_json(409, {"error": "Username is already taken. Please choose another username or sign in."})
                 return
 
+            if email:
+                cursor.execute("SELECT id FROM users WHERE LOWER(email) = LOWER(?)", (email,))
+                if cursor.fetchone():
+                    conn.close()
+                    self._send_json(409, {"error": "An account with this email already exists. Please sign in instead."})
+                    return
+
             salt = secrets.token_hex(8)
             pwd_hash = hash_password(password, salt)
             cursor.execute(
@@ -257,24 +264,27 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             body = self.rfile.read(content_length).decode("utf-8")
             data = json.loads(body)
 
-            username = data.get("username", "").strip()
+            identifier = data.get("username", "").strip()
             password = data.get("password", "").strip()
 
-            if not username or not password:
-                self._send_json(400, {"error": "Username and password are required"})
+            if not identifier or not password:
+                self._send_json(400, {"error": "Username/email and password are required"})
                 return
 
             conn = sqlite3.connect(DB_FILE)
             cursor = conn.cursor()
-            cursor.execute("SELECT id, username, email, password_hash, salt FROM users WHERE LOWER(username) = LOWER(?)", (username,))
+            cursor.execute(
+                "SELECT id, username, email, password_hash, salt FROM users WHERE LOWER(username) = LOWER(?) OR (email IS NOT NULL AND email != '' AND LOWER(email) = LOWER(?))",
+                (identifier, identifier)
+            )
             row = cursor.fetchone()
             conn.close()
 
             if not row:
-                self._send_json(401, {"error": "Account not found. Please check your username or sign up."})
+                self._send_json(401, {"error": "Account not found. Please check your username/email or sign up."})
                 return
 
-            user_id, uname, email, stored_hash, salt = row
+            user_id, uname, user_email, stored_hash, salt = row
             if hash_password(password, salt) != stored_hash:
                 self._send_json(401, {"error": "Incorrect password. Please try again."})
                 return
@@ -282,7 +292,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(200, {
                 "success": True,
                 "message": "Signed in successfully!",
-                "user": {"id": user_id, "username": uname, "email": email}
+                "user": {"id": user_id, "username": uname, "email": user_email}
             })
         else:
             self.send_error(404, "Not Found")
@@ -808,7 +818,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             <input
               type="text"
               id="signin-username"
-              placeholder="Enter your username"
+              placeholder="Enter your username or email"
               autocomplete="username"
               required
             />
@@ -1958,7 +1968,7 @@ __INITIAL_TABLE_ROWS__
         const password = signinPassword.value;
 
         if (!username || !password) {
-          showAuthAlert('Please enter both username and password.');
+          showAuthAlert('Please enter your username or email and password.');
           return;
         }
 
