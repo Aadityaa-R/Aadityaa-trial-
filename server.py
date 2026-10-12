@@ -365,10 +365,6 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     th, td { padding: 0.85rem; border-bottom: 1px solid #282147; }
     th { color: #a79fc2; font-weight: 600; font-size: 0.85rem; text-transform: uppercase; }
     .status-badge { display: inline-block; padding: 0.25rem 0.6rem; border-radius: 0.35rem; font-size: 0.75rem; font-weight: 600; background: #065f46; color: #6ee7b7; }
-    .stats-bar { display: flex; gap: 1rem; margin-bottom: 1.5rem; }
-    .stat-item { flex: 1; background: #1c1735; padding: 1rem; border-radius: 0.5rem; border: 1px solid #2e264f; text-align: center; }
-    .stat-val { font-size: 1.5rem; font-weight: 700; color: #c084fc; }
-    .stat-lbl { font-size: 0.8rem; color: #a79fc2; margin-top: 0.25rem; }
     .search-box-wrapper { position: relative; margin-bottom: 0.75rem; }
     .search-input { width: 100%; padding-left: 2.75rem; padding-right: 2.5rem; background: #0c0919; font-size: 0.95rem; }
     .search-icon { position: absolute; left: 1rem; top: 50%; transform: translateY(-50%); color: #7e749c; font-size: 1rem; pointer-events: none; }
@@ -464,21 +460,6 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         <span class="badge badge-react">Interactive UI</span>
       </div>
     </header>
-
-    <div class="stats-bar">
-      <div class="stat-item">
-        <div class="stat-val" id="stat-total">__TOTAL_COUNT__</div>
-        <div class="stat-lbl">Total Records in SQL DB</div>
-      </div>
-      <div class="stat-item">
-        <div class="stat-val" style="color: #4ade80;">Online</div>
-        <div class="stat-lbl">Python Server Status</div>
-      </div>
-      <div class="stat-item">
-        <div class="stat-val" id="stat-port">:5050</div>
-        <div class="stat-lbl">Active Port</div>
-      </div>
-    </div>
 
     <!-- Project Management Card: 2 Sub-Parts (Add New / Edit Existing) -->
     <div class="card">
@@ -656,8 +637,6 @@ __INITIAL_TABLE_ROWS__
     const searchMeta = document.getElementById('search-meta');
     const searchMetaText = document.getElementById('search-meta-text');
     const resetFiltersBtn = document.getElementById('reset-filters-btn');
-    const statTotal = document.getElementById('stat-total');
-    const statPort = document.getElementById('stat-port');
     const projectForm = document.getElementById('project-form');
     const tabAdd = document.getElementById('tab-add');
     const tabEdit = document.getElementById('tab-edit');
@@ -670,11 +649,6 @@ __INITIAL_TABLE_ROWS__
     const editTech = document.getElementById('edit-tech');
     const editStatus = document.getElementById('edit-status');
     const btnUpdate = document.getElementById('btn-update');
-
-    // Display active port
-    if (window.location.port) {
-      statPort.textContent = ':' + window.location.port;
-    }
 
     // Helper: Escape HTML to prevent XSS
     function escapeHtml(str) {
@@ -962,16 +936,6 @@ __INITIAL_TABLE_ROWS__
       }
     }
 
-    async function fetchStats() {
-      try {
-        const res = await fetch('/api/stats');
-        const data = await res.json();
-        statTotal.textContent = data.total || 0;
-      } catch (err) {
-        console.error('Error fetching stats:', err);
-      }
-    }
-
     // Insert New Project with Instant Real-Time UI Update
     projectForm.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -1024,7 +988,6 @@ __INITIAL_TABLE_ROWS__
       renderSortMenu();
       renderTable();
       populateEditSelect(newRecord.id);
-      statTotal.textContent = allProjects.length;
 
       // Asynchronously persist to SQLite in background
       try {
@@ -1041,7 +1004,6 @@ __INITIAL_TABLE_ROWS__
           renderTable();
           populateEditSelect(data.id);
         }
-        fetchStats();
       } catch (err) {
         // Rollback on failure
         allProjects = allProjects.filter(p => p !== newRecord);
@@ -1049,7 +1011,6 @@ __INITIAL_TABLE_ROWS__
         renderSortMenu();
         renderTable();
         populateEditSelect();
-        statTotal.textContent = allProjects.length;
         alert('Error saving project to database: ' + err.message);
       }
     });
@@ -1121,18 +1082,15 @@ __INITIAL_TABLE_ROWS__
       renderSortMenu();
       renderTable();
       populateEditSelect();
-      statTotal.textContent = allProjects.length;
 
       try {
         const res = await fetch('/api/projects/' + id, { method: 'DELETE' });
         if (!res.ok) throw new Error('Server returned ' + res.status);
-        fetchStats();
       } catch (err) {
         allProjects = prevProjects;
         renderSortMenu();
         renderTable();
         populateEditSelect();
-        statTotal.textContent = allProjects.length;
         alert('Error deleting project: ' + err.message);
       }
     }
@@ -1144,14 +1102,12 @@ __INITIAL_TABLE_ROWS__
 
     // Background live refreshes
     fetchProjects();
-    fetchStats();
   </script>
 </body>
 </html>
 """
         page_html = (page_template
                      .replace("__INITIAL_PROJECTS__", initial_json)
-                     .replace("__TOTAL_COUNT__", str(total_count))
                      .replace("__INITIAL_TABLE_ROWS__", rows_html)
                      .replace("__INITIAL_SORT_OPTIONS__", sort_options_html)
                      .replace("__INITIAL_EDIT_OPTIONS__", edit_options_html)
