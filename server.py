@@ -260,44 +260,43 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
   <title>Full-Stack Web App: Python + SQL + React</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-    body { background: #0f172a; color: #f8fafc; min-height: 100vh; padding: 2rem 1rem; }
+    body { background: #120e24; color: #f5f3ff; min-height: 100vh; padding: 2rem 1rem; }
     .container { max-width: 900px; margin: 0 auto; }
-    header { margin-bottom: 2rem; border-bottom: 1px solid #1e293b; padding-bottom: 1.5rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; }
-    h1 { font-size: 1.8rem; font-weight: 700; color: #38bdf8; }
+    header { margin-bottom: 2rem; border-bottom: 1px solid #2e264f; padding-bottom: 1.5rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; }
+    h1 { font-size: 1.8rem; font-weight: 700; color: #c084fc; }
     .badges { display: flex; gap: 0.5rem; }
     .badge { padding: 0.35rem 0.75rem; border-radius: 9999px; font-size: 0.8rem; font-weight: 600; display: inline-block; }
-    .badge-py { background: #0284c7; color: white; }
+    .badge-py { background: #7c3aed; color: white; }
     .badge-sql { background: #d97706; color: white; }
-    .badge-react { background: #06b6d4; color: white; }
-    .card { background: #1e293b; border-radius: 0.75rem; padding: 1.5rem; margin-bottom: 1.5rem; border: 1px solid #334155; }
-    .card h2 { font-size: 1.25rem; margin-bottom: 1rem; color: #e2e8f0; }
+    .badge-react { background: #9333ea; color: white; }
+    .card { background: #1c1735; border-radius: 0.75rem; padding: 1.5rem; margin-bottom: 1.5rem; border: 1px solid #2e264f; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25); }
+    .card h2 { font-size: 1.25rem; margin-bottom: 1rem; color: #e9d5ff; }
     .form-group { display: flex; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap; }
-    input, select, button { padding: 0.75rem 1rem; border-radius: 0.5rem; border: 1px solid #475569; font-size: 0.95rem; }
-    input, select { background: #0f172a; color: white; flex: 1; min-width: 200px; }
-    input:focus, select:focus { outline: none; border-color: #38bdf8; }
-    button { background: #38bdf8; color: #0f172a; font-weight: 600; cursor: pointer; border: none; transition: background 0.2s; }
-    button:hover { background: #0ea5e9; }
+    input, select, button { padding: 0.75rem 1rem; border-radius: 0.5rem; border: 1px solid #3b3263; font-size: 0.95rem; }
+    input, select { background: #0c0919; color: white; flex: 1; min-width: 200px; }
+    input:focus, select:focus { outline: none; border-color: #c084fc; box-shadow: 0 0 0 2px rgba(192, 132, 252, 0.2); }
+    button { background: #a855f7; color: white; font-weight: 600; cursor: pointer; border: none; transition: all 0.2s; }
+    button:hover { background: #9333ea; }
     .btn-danger { background: #ef4444; color: white; padding: 0.4rem 0.8rem; font-size: 0.85rem; border-radius: 0.35rem; }
     .btn-danger:hover { background: #dc2626; }
     .table-container { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; text-align: left; }
-    th, td { padding: 0.85rem; border-bottom: 1px solid #334155; }
-    th { color: #94a3b8; font-weight: 600; font-size: 0.85rem; text-transform: uppercase; }
+    th, td { padding: 0.85rem; border-bottom: 1px solid #282147; }
+    th { color: #a79fc2; font-weight: 600; font-size: 0.85rem; text-transform: uppercase; }
     .status-badge { display: inline-block; padding: 0.25rem 0.6rem; border-radius: 0.35rem; font-size: 0.75rem; font-weight: 600; background: #065f46; color: #6ee7b7; }
-    .sql-box { background: #090d16; padding: 1rem; border-radius: 0.5rem; font-family: monospace; color: #a5f3fc; margin-top: 1rem; border: 1px solid #1e293b; overflow-x: auto; }
     .stats-bar { display: flex; gap: 1rem; margin-bottom: 1.5rem; }
-    .stat-item { flex: 1; background: #1e293b; padding: 1rem; border-radius: 0.5rem; border: 1px solid #334155; text-align: center; }
-    .stat-val { font-size: 1.5rem; font-weight: 700; color: #38bdf8; }
-    .stat-lbl { font-size: 0.8rem; color: #94a3b8; margin-top: 0.25rem; }
+    .stat-item { flex: 1; background: #1c1735; padding: 1rem; border-radius: 0.5rem; border: 1px solid #2e264f; text-align: center; }
+    .stat-val { font-size: 1.5rem; font-weight: 700; color: #c084fc; }
+    .stat-lbl { font-size: 0.8rem; color: #a79fc2; margin-top: 0.25rem; }
     .search-box-wrapper { position: relative; margin-bottom: 0.75rem; }
-    .search-input { width: 100%; padding-left: 2.75rem; padding-right: 2.5rem; background: #090d16; font-size: 0.95rem; }
-    .search-icon { position: absolute; left: 1rem; top: 50%; transform: translateY(-50%); color: #64748b; font-size: 1rem; pointer-events: none; }
-    .clear-btn { position: absolute; right: 0.75rem; top: 50%; transform: translateY(-50%); background: transparent; border: none; color: #94a3b8; font-size: 1.1rem; cursor: pointer; padding: 0.25rem; }
-    .clear-btn:hover { color: #f8fafc; background: transparent; }
+    .search-input { width: 100%; padding-left: 2.75rem; padding-right: 2.5rem; background: #0c0919; font-size: 0.95rem; }
+    .search-icon { position: absolute; left: 1rem; top: 50%; transform: translateY(-50%); color: #7e749c; font-size: 1rem; pointer-events: none; }
+    .clear-btn { position: absolute; right: 0.75rem; top: 50%; transform: translateY(-50%); background: transparent; border: none; color: #a79fc2; font-size: 1.1rem; cursor: pointer; padding: 0.25rem; }
+    .clear-btn:hover { color: #f5f3ff; background: transparent; }
     .btn-sort {
-      background: #1e293b;
-      color: #f8fafc;
-      border: 1px solid #475569;
+      background: #1c1735;
+      color: #f5f3ff;
+      border: 1px solid #3b3263;
       border-radius: 0.5rem;
       padding: 0.75rem 1.25rem;
       font-weight: 600;
@@ -309,18 +308,18 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
       transition: all 0.2s;
     }
     .btn-sort:hover {
-      background: #334155;
-      border-color: #38bdf8;
+      background: #282147;
+      border-color: #c084fc;
     }
     .sort-dropdown-menu {
       position: absolute;
       top: calc(100% + 0.5rem);
       right: 0;
-      background: #1e293b;
-      border: 1px solid #475569;
+      background: #1c1735;
+      border: 1px solid #3b3263;
       border-radius: 0.5rem;
       min-width: 200px;
-      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.6);
       z-index: 50;
       overflow: hidden;
       padding: 0.25rem 0;
@@ -332,7 +331,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
       background: transparent;
       border: none;
       border-radius: 0;
-      color: #e2e8f0;
+      color: #e9d5ff;
       font-size: 0.9rem;
       display: flex;
       justify-content: space-between;
@@ -341,27 +340,27 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
       transition: background 0.15s;
     }
     .sort-option:hover {
-      background: #0284c7;
+      background: #7e22ce;
       color: white;
     }
     .sort-option.active {
-      background: rgba(2, 132, 199, 0.25);
-      color: #38bdf8;
+      background: rgba(168, 85, 247, 0.25);
+      color: #c084fc;
       font-weight: 700;
     }
     .sort-badge {
-      background: #0f172a;
+      background: #0c0919;
       padding: 0.15rem 0.55rem;
       border-radius: 9999px;
       font-size: 0.75rem;
-      color: #94a3b8;
+      color: #c4b5fd;
     }
-    .search-meta { display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.75rem; }
-    .highlight { background: rgba(56, 189, 248, 0.3); color: #38bdf8; font-weight: 700; border-radius: 0.2rem; padding: 0 0.2rem; }
-    .btn-link { background: transparent; color: #38bdf8; border: none; padding: 0; font-size: 0.85rem; cursor: pointer; text-decoration: underline; }
-    .btn-link:hover { background: transparent; color: #7dd3fc; }
+    .search-meta { display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: #a79fc2; margin-bottom: 0.75rem; }
+    .highlight { background: rgba(168, 85, 247, 0.35); color: #e9d5ff; font-weight: 700; border-radius: 0.2rem; padding: 0 0.2rem; }
+    .btn-link { background: transparent; color: #c084fc; border: none; padding: 0; font-size: 0.85rem; cursor: pointer; text-decoration: underline; }
+    .btn-link:hover { background: transparent; color: #e9d5ff; }
     @keyframes rowHighlight {
-      0% { background-color: rgba(56, 189, 248, 0.35); }
+      0% { background-color: rgba(168, 85, 247, 0.4); }
       100% { background-color: transparent; }
     }
     .new-row-flash {
@@ -494,24 +493,6 @@ __INITIAL_TABLE_ROWS__
         </table>
       </div>
     </div>
-
-    <!-- SQL Explorer -->
-    <div class="card">
-      <h2>Interactive SQL Explorer</h2>
-      <p style="color: #94a3b8; font-size: 0.85rem; marginBottom: 0.75rem;">
-        Execute custom SQL SELECT queries directly against the Python SQLite database:
-      </p>
-      <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
-        <input
-          type="text"
-          id="sql-input"
-          value="SELECT id, name, technology, status FROM projects"
-          style="font-family: monospace; flex: 1; min-width: 260px;"
-        />
-        <button type="button" id="btn-run-sql">Execute SQL</button>
-      </div>
-      <pre id="sql-result" class="sql-box" style="display: none;"></pre>
-    </div>
   </div>
 
   <script>
@@ -538,9 +519,6 @@ __INITIAL_TABLE_ROWS__
     const statTotal = document.getElementById('stat-total');
     const statPort = document.getElementById('stat-port');
     const projectForm = document.getElementById('project-form');
-    const sqlInput = document.getElementById('sql-input');
-    const btnRunSql = document.getElementById('btn-run-sql');
-    const sqlResult = document.getElementById('sql-result');
 
     // Display active port
     if (window.location.port) {
@@ -883,26 +861,6 @@ __INITIAL_TABLE_ROWS__
         alert('Error deleting project: ' + err.message);
       }
     }
-
-    // Execute Raw SQL Query
-    btnRunSql.addEventListener('click', async () => {
-      const query = sqlInput.value.trim();
-      if (!query) return;
-
-      try {
-        const res = await fetch('/api/raw-sql', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query })
-        });
-        const data = await res.json();
-        sqlResult.style.display = 'block';
-        sqlResult.textContent = JSON.stringify(data, null, 2);
-      } catch (err) {
-        sqlResult.style.display = 'block';
-        sqlResult.textContent = 'Error: ' + err.message;
-      }
-    });
 
     // Initial instant render from pre-loaded SQLite data
     renderSortMenu();
