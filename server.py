@@ -83,7 +83,24 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             conn = sqlite3.connect(DB_FILE)
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM projects ORDER BY id DESC")
+
+            # Parse query parameters for SQL search (e.g. ?q=login&tech=Python)
+            params = urllib.parse.parse_qs(parsed.query)
+            q = params.get("q", [""])[0].strip()
+            tech = params.get("tech", [""])[0].strip()
+
+            sql = "SELECT * FROM projects WHERE 1=1"
+            args = []
+            if q:
+                sql += " AND (name LIKE ? OR description LIKE ?)"
+                pattern = f"%{q}%"
+                args.extend([pattern, pattern])
+            if tech and tech != "All":
+                sql += " AND technology = ?"
+                args.append(tech)
+            sql += " ORDER BY id DESC"
+
+            cursor.execute(sql, args)
             rows = [dict(row) for row in cursor.fetchall()]
             conn.close()
             self._send_json(200, rows)
@@ -209,7 +226,19 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     .stats-bar { display: flex; gap: 1rem; margin-bottom: 1.5rem; }
     .stat-item { flex: 1; background: #1e293b; padding: 1rem; border-radius: 0.5rem; border: 1px solid #334155; text-align: center; }
     .stat-val { font-size: 1.5rem; font-weight: 700; color: #38bdf8; }
-    .stat-lbl { font-size: 0.8rem; color: #94a3b8; margin-top: 0.25rem; }
+    .search-box-wrapper { position: relative; margin-bottom: 0.75rem; }
+    .search-input { width: 100%; padding-left: 2.75rem; padding-right: 2.5rem; background: #090d16; font-size: 0.95rem; }
+    .search-icon { position: absolute; left: 1rem; top: 50%; transform: translateY(-50%); color: #64748b; font-size: 1rem; pointer-events: none; }
+    .clear-btn { position: absolute; right: 0.75rem; top: 50%; transform: translateY(-50%); background: transparent; border: none; color: #94a3b8; font-size: 1.1rem; cursor: pointer; padding: 0.25rem; }
+    .clear-btn:hover { color: #f8fafc; background: transparent; }
+    .filter-chips { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    .chip { padding: 0.35rem 0.8rem; border-radius: 9999px; font-size: 0.8rem; font-weight: 600; cursor: pointer; background: #0f172a; border: 1px solid #334155; color: #94a3b8; transition: all 0.2s; }
+    .chip:hover { border-color: #38bdf8; color: white; }
+    .chip.active { background: #0284c7; border-color: #38bdf8; color: white; }
+    .search-meta { display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.75rem; }
+    .highlight { background: rgba(56, 189, 248, 0.3); color: #38bdf8; font-weight: 700; border-radius: 0.2rem; padding: 0 0.2rem; }
+    .btn-link { background: transparent; color: #38bdf8; border: none; padding: 0; font-size: 0.85rem; cursor: pointer; text-decoration: underline; }
+    .btn-link:hover { background: transparent; color: #7dd3fc; }
   </style>
 </head>
 <body>
@@ -227,6 +256,34 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
       const [sqlQuery, setSqlQuery] = useState('SELECT id, name, technology, status FROM projects');
       const [sqlResult, setSqlResult] = useState(null);
       const [loading, setLoading] = useState(false);
+
+      // Live search & technology filter state
+      const [searchQuery, setSearchQuery] = useState('');
+      const [selectedTech, setSelectedTech] = useState('All');
+      const techOptions = ['All', 'Python', 'SQL', 'React', 'Fullstack'];
+
+      // Helper to highlight matching search characters
+      const highlightMatch = (text, query) => {
+        if (!text || !query.trim()) return text;
+        const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(`(${escaped})`, 'gi');
+        const parts = text.split(regex);
+        return parts.map((part, i) =>
+          part.toLowerCase() === query.toLowerCase() ? (
+            <span key={i} className="highlight">{part}</span>
+          ) : part
+        );
+      };
+
+      // Real-time filtered projects list
+      const filteredProjects = projects.filter((p) => {
+        const query = searchQuery.trim().toLowerCase();
+        const matchesQuery = !query ||
+          p.name.toLowerCase().includes(query) ||
+          (p.description && p.description.toLowerCase().includes(query));
+        const matchesTech = selectedTech === 'All' || p.technology === selectedTech;
+        return matchesQuery && matchesTech;
+      });
 
       const fetchProjects = async () => {
         try {
@@ -360,7 +417,72 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
           </div>
 
           <div className="card">
-            <h2>Live Database Records (SQL SELECT)</h2>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+              <h2>Live Database Records (SQL SELECT)</h2>
+              <span style={{ fontSize: '0.85rem', color: '#94a3b8' }}>
+                {filteredProjects.length === projects.length
+                  ? `Showing all ${projects.length} records`
+                  : `Showing ${filteredProjects.length} of ${projects.length} records`}
+              </span>
+            </div>
+
+            {/* Live Search Input */}
+            <div className="search-box-wrapper">
+              <span className="search-icon">🔍</span>
+              <input
+                type="text"
+                className="search-input"
+                placeholder="Live search by project name or description in real-time..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  className="clear-btn"
+                  title="Clear search"
+                  onClick={() => setSearchQuery('')}
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+
+            {/* Technology Filter Chips */}
+            <div className="filter-chips">
+              {techOptions.map((t) => {
+                const count = t === 'All'
+                  ? projects.length
+                  : projects.filter((p) => p.technology === t).length;
+                return (
+                  <button
+                    key={t}
+                    type="button"
+                    className={`chip ${selectedTech === t ? 'active' : ''}`}
+                    onClick={() => setSelectedTech(t)}
+                  >
+                    {t} ({count})
+                  </button>
+                );
+              })}
+            </div>
+
+            {(searchQuery || selectedTech !== 'All') && (
+              <div className="search-meta">
+                <span>
+                  Filtering by: {searchQuery && <span>query "<strong>{searchQuery}</strong>" </span>}
+                  {selectedTech !== 'All' && <span>technology "<strong>{selectedTech}</strong>"</span>}
+                </span>
+                <button
+                  type="button"
+                  className="btn-link"
+                  onClick={() => { setSearchQuery(''); setSelectedTech('All'); }}
+                >
+                  Reset All Filters
+                </button>
+              </div>
+            )}
+
             <div className="table-container">
               <table>
                 <thead>
@@ -374,11 +496,11 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                   </tr>
                 </thead>
                 <tbody>
-                  {projects.map((p) => (
+                  {filteredProjects.map((p) => (
                     <tr key={p.id}>
                       <td>#{p.id}</td>
-                      <td style={{ fontWeight: 600 }}>{p.name}</td>
-                      <td style={{ color: '#94a3b8' }}>{p.description}</td>
+                      <td style={{ fontWeight: 600 }}>{highlightMatch(p.name, searchQuery)}</td>
+                      <td style={{ color: '#94a3b8' }}>{highlightMatch(p.description, searchQuery)}</td>
                       <td><span className="badge badge-py">{p.technology}</span></td>
                       <td><span className="status-badge">{p.status}</span></td>
                       <td>
@@ -388,6 +510,22 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                       </td>
                     </tr>
                   ))}
+                  {filteredProjects.length === 0 && projects.length > 0 && (
+                    <tr>
+                      <td colSpan="6" style={{ textAlign: 'center', color: '#94a3b8', padding: '2rem' }}>
+                        🔍 No projects match your search for "{searchQuery}".
+                        <br />
+                        <button
+                          type="button"
+                          className="btn-link"
+                          style={{ marginTop: '0.75rem', display: 'inline-block' }}
+                          onClick={() => { setSearchQuery(''); setSelectedTech('All'); }}
+                        >
+                          Clear search filters
+                        </button>
+                      </td>
+                    </tr>
+                  )}
                   {projects.length === 0 && (
                     <tr>
                       <td colSpan="6" style={{ textAlign: 'center', color: '#64748b', padding: '2rem' }}>
