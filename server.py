@@ -64,7 +64,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
         self.wfile.write(body)
@@ -72,7 +72,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(200)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
@@ -178,6 +178,44 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         else:
             self.send_error(404, "Not Found")
 
+    def do_PUT(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+
+        if path.startswith("/api/projects/"):
+            try:
+                project_id = int(path.split("/")[-1])
+                content_length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(content_length).decode("utf-8")
+                data = json.loads(body)
+
+                name = data.get("name", "").strip()
+                desc = data.get("description", "").strip()
+                tech = data.get("technology", "Python").strip()
+                status = data.get("status", "In Progress").strip()
+
+                if not name:
+                    self._send_json(400, {"error": "Project name is required"})
+                    return
+
+                conn = sqlite3.connect(DB_FILE)
+                cursor = conn.cursor()
+                cursor.execute("""
+                UPDATE projects
+                SET name = ?, description = ?, technology = ?, status = ?
+                WHERE id = ?
+                """, (name, desc, tech, status, project_id))
+                conn.commit()
+                conn.close()
+
+                self._send_json(200, {"id": project_id, "message": "Project updated successfully"})
+            except ValueError:
+                self._send_json(400, {"error": "Invalid project ID"})
+            except Exception as e:
+                self._send_json(500, {"error": str(e)})
+        else:
+            self.send_error(404, "Not Found")
+
     def do_DELETE(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
@@ -226,10 +264,13 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 f'<tr>'
                 f'<td>#{pid}</td>'
                 f'<td style="font-weight: 600;">{pname}</td>'
-                f'<td style="color: #94a3b8;">{pdesc}</td>'
+                f'<td style="color: #a79fc2;">{pdesc}</td>'
                 f'<td><span class="badge {badge_class}">{ptech}</span></td>'
                 f'<td><span class="status-badge">{pstatus}</span></td>'
-                f'<td><button type="button" class="btn-danger" data-id="{pid}">Delete</button></td>'
+                f'<td>'
+                f'<button type="button" class="btn-edit" data-id="{pid}">✏️ Edit</button>'
+                f'<button type="button" class="btn-danger" data-id="{pid}">Delete</button>'
+                f'</td>'
                 f'</tr>'
             )
         rows_html = "".join(row_items) if row_items else '<tr><td colspan="6" style="text-align: center; color: #64748b; padding: 2rem;">No records found in database.</td></tr>'
@@ -250,6 +291,15 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 f'</button>'
             )
         sort_options_html = "".join(sort_items)
+
+        edit_items = []
+        for p in initial_projects:
+            pid = p["id"]
+            pname = html_escape(str(p["name"]))
+            ptech = html_escape(str(p["technology"]))
+            edit_items.append(f'<option value="{pid}">#{pid} - {pname} ({ptech})</option>')
+        edit_options_html = "".join(edit_items) if edit_items else '<option value="">No projects available</option>'
+
         counter_text = f"Showing all {len(initial_projects)} records"
 
         page_template = """<!DOCTYPE html>
@@ -279,6 +329,30 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     button:hover { background: #9333ea; }
     .btn-danger { background: #ef4444; color: white; padding: 0.4rem 0.8rem; font-size: 0.85rem; border-radius: 0.35rem; }
     .btn-danger:hover { background: #dc2626; }
+    .btn-edit { background: #6b21a8; color: white; padding: 0.4rem 0.8rem; font-size: 0.85rem; border-radius: 0.35rem; margin-right: 0.35rem; border: none; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+    .btn-edit:hover { background: #7e22ce; }
+    .tab-btn {
+      padding: 0.65rem 1.25rem;
+      border-radius: 0.5rem;
+      font-weight: 600;
+      font-size: 0.95rem;
+      cursor: pointer;
+      border: 1px solid #3b3263;
+      background: #120e24;
+      color: #a79fc2;
+      transition: all 0.2s;
+    }
+    .tab-btn:hover {
+      background: #1c1735;
+      color: #f5f3ff;
+      border-color: #c084fc;
+    }
+    .tab-btn.active {
+      background: #7c3aed;
+      color: white;
+      border-color: #a855f7;
+      box-shadow: 0 0 12px rgba(168, 85, 247, 0.3);
+    }
     .table-container { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; text-align: left; }
     th, td { padding: 0.85rem; border-bottom: 1px solid #282147; }
@@ -399,31 +473,90 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
       </div>
     </div>
 
-    <!-- Insert Form -->
+    <!-- Project Management Card: 2 Sub-Parts (Add New / Edit Existing) -->
     <div class="card">
-      <h2>Add New Project (SQL INSERT)</h2>
-      <form id="project-form" onsubmit="return false;">
-        <div class="form-group">
-          <input
-            type="text"
-            id="proj-name"
-            placeholder="Project Name (e.g. Authentication Module)"
-            required
-          />
-          <input
-            type="text"
-            id="proj-desc"
-            placeholder="Description (e.g. Secure user login system)"
-          />
-          <select id="proj-tech">
-            <option value="Python">Python</option>
-            <option value="SQL">SQL</option>
-            <option value="React">React</option>
-            <option value="Fullstack">Fullstack</option>
-          </select>
-          <button type="submit" id="btn-submit">+ Insert into SQL</button>
-        </div>
-      </form>
+      <div style="display: flex; gap: 0.5rem; margin-bottom: 1.25rem; border-bottom: 1px solid #2e264f; padding-bottom: 0.75rem;">
+        <button type="button" id="tab-add" class="tab-btn active" style="flex: 1;">
+          ➕ Add New Project
+        </button>
+        <button type="button" id="tab-edit" class="tab-btn" style="flex: 1;">
+          ✏️ Edit Existing Project
+        </button>
+      </div>
+
+      <!-- Sub-Part 1: Add New Project -->
+      <div id="panel-add">
+        <h2 style="font-size: 1.1rem; margin-bottom: 0.75rem; color: #e9d5ff;">
+          Add New Project (SQL INSERT)
+        </h2>
+        <form id="project-form" onsubmit="return false;">
+          <div class="form-group">
+            <input
+              type="text"
+              id="proj-name"
+              placeholder="Project Name (e.g. Authentication Module)"
+              required
+            />
+            <input
+              type="text"
+              id="proj-desc"
+              placeholder="Description (e.g. Secure user login system)"
+            />
+            <select id="proj-tech">
+              <option value="Python">Python</option>
+              <option value="SQL">SQL</option>
+              <option value="React">React</option>
+              <option value="Fullstack">Fullstack</option>
+            </select>
+            <button type="submit" id="btn-submit">+ Insert into SQL</button>
+          </div>
+        </form>
+      </div>
+
+      <!-- Sub-Part 2: Edit Existing Project -->
+      <div id="panel-edit" style="display: none;">
+        <h2 style="font-size: 1.1rem; margin-bottom: 0.75rem; color: #e9d5ff;">
+          Edit Existing Project (SQL UPDATE)
+        </h2>
+        <form id="edit-form" onsubmit="return false;">
+          <div style="margin-bottom: 0.75rem;">
+            <label style="font-size: 0.85rem; color: #a79fc2; display: block; margin-bottom: 0.35rem; font-weight: 600;">
+              Choose Project to Edit:
+            </label>
+            <select id="edit-select" style="width: 100%; margin-bottom: 0.75rem;">
+__INITIAL_EDIT_OPTIONS__
+            </select>
+          </div>
+          <div class="form-group">
+            <input
+              type="text"
+              id="edit-name"
+              placeholder="Project Name"
+              required
+            />
+            <input
+              type="text"
+              id="edit-desc"
+              placeholder="Description"
+            />
+            <select id="edit-tech">
+              <option value="Python">Python</option>
+              <option value="SQL">SQL</option>
+              <option value="React">React</option>
+              <option value="Fullstack">Fullstack</option>
+            </select>
+            <select id="edit-status">
+              <option value="In Progress">In Progress</option>
+              <option value="Completed">Completed</option>
+              <option value="On Hold">On Hold</option>
+              <option value="Planned">Planned</option>
+            </select>
+            <button type="submit" id="btn-update" style="background: #9333ea;">
+              💾 Save Changes
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
 
     <!-- Live Database Records with Search -->
@@ -519,6 +652,17 @@ __INITIAL_TABLE_ROWS__
     const statTotal = document.getElementById('stat-total');
     const statPort = document.getElementById('stat-port');
     const projectForm = document.getElementById('project-form');
+    const tabAdd = document.getElementById('tab-add');
+    const tabEdit = document.getElementById('tab-edit');
+    const panelAdd = document.getElementById('panel-add');
+    const panelEdit = document.getElementById('panel-edit');
+    const editForm = document.getElementById('edit-form');
+    const editSelect = document.getElementById('edit-select');
+    const editName = document.getElementById('edit-name');
+    const editDesc = document.getElementById('edit-desc');
+    const editTech = document.getElementById('edit-tech');
+    const editStatus = document.getElementById('edit-status');
+    const btnUpdate = document.getElementById('btn-update');
 
     // Display active port
     if (window.location.port) {
@@ -610,6 +754,56 @@ __INITIAL_TABLE_ROWS__
       renderTable();
     });
 
+    // Populate Edit dropdown options
+    function populateEditSelect(selectedId) {
+      if (allProjects.length === 0) {
+        editSelect.innerHTML = '<option value="">No projects available</option>';
+        editName.value = '';
+        editDesc.value = '';
+        return;
+      }
+      editSelect.innerHTML = allProjects.map(p => {
+        return '<option value="' + p.id + '">' +
+               '#' + p.id + ' - ' + escapeHtml(p.name) + ' (' + escapeHtml(p.technology) + ')' +
+               '</option>';
+      }).join('');
+      if (selectedId) {
+        editSelect.value = String(selectedId);
+      }
+      loadSelectedProjectForEditing();
+    }
+
+    // Load selected project data into the edit inputs
+    function loadSelectedProjectForEditing() {
+      const currentId = editSelect.value;
+      const project = allProjects.find(p => String(p.id) === String(currentId));
+      if (project) {
+        editName.value = project.name || '';
+        editDesc.value = project.description || '';
+        editTech.value = project.technology || 'Python';
+        editStatus.value = project.status || 'In Progress';
+      }
+    }
+
+    editSelect.addEventListener('change', loadSelectedProjectForEditing);
+
+    // Tab switching handlers
+    tabAdd.addEventListener('click', () => {
+      tabAdd.classList.add('active');
+      tabEdit.classList.remove('active');
+      panelAdd.style.display = 'block';
+      panelEdit.style.display = 'none';
+    });
+
+    tabEdit.addEventListener('click', () => {
+      tabEdit.classList.add('active');
+      tabAdd.classList.remove('active');
+      panelAdd.style.display = 'none';
+      panelEdit.style.display = 'block';
+      populateEditSelect();
+      editName.focus();
+    });
+
     // Render Projects Table
     function renderTable() {
       const q = searchQuery.trim().toLowerCase();
@@ -681,10 +875,13 @@ __INITIAL_TABLE_ROWS__
         return '<tr' + flashClass + '>' +
           '<td>#' + p.id + '</td>' +
           '<td style="font-weight: 600;">' + highlight(p.name, searchQuery) + '</td>' +
-          '<td style="color: #94a3b8;">' + highlight(p.description, searchQuery) + '</td>' +
+          '<td style="color: #a79fc2;">' + highlight(p.description, searchQuery) + '</td>' +
           '<td><span class="badge ' + badgeClass + '">' + escapeHtml(p.technology) + '</span></td>' +
           '<td><span class="status-badge">' + escapeHtml(p.status) + '</span></td>' +
-          '<td><button type="button" class="btn-danger" data-id="' + p.id + '">Delete</button></td>' +
+          '<td>' +
+          '<button type="button" class="btn-edit" data-id="' + p.id + '">✏️ Edit</button>' +
+          '<button type="button" class="btn-danger" data-id="' + p.id + '">Delete</button>' +
+          '</td>' +
           '</tr>';
       }).join('');
 
@@ -693,11 +890,25 @@ __INITIAL_TABLE_ROWS__
 
     }
 
-    // Event delegation: Delete project row
+    // Event delegation: Edit and Delete project rows
     projectsTbody.addEventListener('click', (e) => {
-      const btn = e.target.closest('.btn-danger');
-      if (btn) {
-        const id = btn.getAttribute('data-id');
+      const editBtn = e.target.closest('.btn-edit');
+      if (editBtn) {
+        const id = editBtn.getAttribute('data-id');
+        if (id) {
+          tabEdit.classList.add('active');
+          tabAdd.classList.remove('active');
+          panelAdd.style.display = 'none';
+          panelEdit.style.display = 'block';
+          populateEditSelect(id);
+          editName.focus();
+          panelEdit.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+        return;
+      }
+      const deleteBtn = e.target.closest('.btn-danger');
+      if (deleteBtn) {
+        const id = deleteBtn.getAttribute('data-id');
         if (id) deleteProject(id);
       }
     });
@@ -753,6 +964,7 @@ __INITIAL_TABLE_ROWS__
         allProjects = await res.json();
         renderTable();
         renderSortMenu();
+        populateEditSelect(editSelect.value);
       } catch (err) {
         console.error('Error fetching projects:', err);
         projectsTbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#ef4444; padding:2rem;">Error connecting to Python backend.</td></tr>';
@@ -783,7 +995,7 @@ __INITIAL_TABLE_ROWS__
       if (!name) {
         nameInput.focus();
         nameInput.style.borderColor = '#ef4444';
-        setTimeout(() => { nameInput.style.borderColor = '#475569'; }, 1500);
+        setTimeout(() => { nameInput.style.borderColor = '#3b3263'; }, 1500);
         return;
       }
 
@@ -815,6 +1027,7 @@ __INITIAL_TABLE_ROWS__
       // Update UI in real-time (0ms delay)
       renderSortMenu();
       renderTable();
+      populateEditSelect(newRecord.id);
       statTotal.textContent = allProjects.length;
 
       // Asynchronously persist to SQLite in background
@@ -829,6 +1042,7 @@ __INITIAL_TABLE_ROWS__
         if (data && data.id) {
           newRecord.id = data.id;
           renderTable();
+          populateEditSelect(data.id);
         }
         fetchStats();
       } catch (err) {
@@ -836,8 +1050,69 @@ __INITIAL_TABLE_ROWS__
         allProjects = allProjects.filter(p => p !== newRecord);
         renderSortMenu();
         renderTable();
+        populateEditSelect();
         statTotal.textContent = allProjects.length;
         alert('Error saving project to database: ' + err.message);
+      }
+    });
+
+    // Update Existing Project with Instant Real-Time UI Update
+    editForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const id = editSelect.value;
+      if (!id) {
+        alert('Please select a project to edit.');
+        return;
+      }
+      const name = editName.value.trim();
+      const desc = editDesc.value.trim();
+      const tech = editTech.value;
+      const status = editStatus.value;
+
+      if (!name) {
+        editName.focus();
+        editName.style.borderColor = '#ef4444';
+        setTimeout(() => { editName.style.borderColor = '#3b3263'; }, 1500);
+        return;
+      }
+
+      const prevProjects = JSON.parse(JSON.stringify(allProjects));
+      const targetProj = allProjects.find(p => String(p.id) === String(id));
+      if (!targetProj) return;
+
+      targetProj.name = name;
+      targetProj.description = desc;
+      targetProj.technology = tech;
+      targetProj.status = status;
+      targetProj._isNew = true;
+
+      // Update UI immediately
+      renderSortMenu();
+      renderTable();
+      populateEditSelect(id);
+
+      // Save button visual feedback
+      btnUpdate.textContent = '✓ Saved!';
+      btnUpdate.style.background = '#059669';
+      setTimeout(() => {
+        btnUpdate.textContent = '💾 Save Changes';
+        btnUpdate.style.background = '#9333ea';
+      }, 1200);
+
+      // Asynchronously persist to SQLite in background
+      try {
+        const res = await fetch('/api/projects/' + id, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, description: desc, technology: tech, status })
+        });
+        if (!res.ok) throw new Error('Server returned ' + res.status);
+      } catch (err) {
+        allProjects = prevProjects;
+        renderSortMenu();
+        renderTable();
+        populateEditSelect(id);
+        alert('Error updating project: ' + err.message);
       }
     });
 
@@ -847,6 +1122,7 @@ __INITIAL_TABLE_ROWS__
       allProjects = allProjects.filter(p => String(p.id) !== String(id));
       renderSortMenu();
       renderTable();
+      populateEditSelect();
       statTotal.textContent = allProjects.length;
 
       try {
@@ -857,6 +1133,7 @@ __INITIAL_TABLE_ROWS__
         allProjects = prevProjects;
         renderSortMenu();
         renderTable();
+        populateEditSelect();
         statTotal.textContent = allProjects.length;
         alert('Error deleting project: ' + err.message);
       }
@@ -865,6 +1142,7 @@ __INITIAL_TABLE_ROWS__
     // Initial instant render from pre-loaded SQLite data
     renderSortMenu();
     renderTable();
+    populateEditSelect();
 
     // Background live refreshes
     fetchProjects();
@@ -878,6 +1156,7 @@ __INITIAL_TABLE_ROWS__
                      .replace("__TOTAL_COUNT__", str(total_count))
                      .replace("__INITIAL_TABLE_ROWS__", rows_html)
                      .replace("__INITIAL_SORT_OPTIONS__", sort_options_html)
+                     .replace("__INITIAL_EDIT_OPTIONS__", edit_options_html)
                      .replace("__INITIAL_COUNTER__", counter_text))
         body = page_html.encode("utf-8")
         self.send_response(200)

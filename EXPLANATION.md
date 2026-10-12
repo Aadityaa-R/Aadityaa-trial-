@@ -168,3 +168,4 @@ To start learning, try making these small changes in [`server.py`](./server.py):
 ---
 
 Congratulations! You now understand how a Full-Stack Web Application connects Frontend, Backend, and Database! 🎉
+
