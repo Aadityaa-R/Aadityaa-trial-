@@ -523,6 +523,37 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
       transform: translateY(-2px);
       box-shadow: 0 4px 12px rgba(168, 85, 247, 0.2);
     }
+    .cat-chip {
+      background: #1c1735;
+      color: #a79fc2;
+      border: 1px solid #3b3263;
+      border-radius: 9999px;
+      padding: 0.3rem 0.7rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      transition: all 0.2s ease;
+    }
+    .cat-chip:hover {
+      background: #282147;
+      color: #f5f3ff;
+      border-color: #c084fc;
+    }
+    .cat-chip.active {
+      background: #7c3aed;
+      color: white;
+      border-color: #a855f7;
+      box-shadow: 0 0 10px rgba(124, 58, 237, 0.4);
+    }
+    .cat-chip .chip-count {
+      background: rgba(0, 0, 0, 0.35);
+      padding: 0.1rem 0.45rem;
+      border-radius: 9999px;
+      font-size: 0.7rem;
+    }
   </style>
 </head>
 <body>
@@ -719,6 +750,22 @@ __INITIAL_TABLE_ROWS__
             </button>
           </div>
 
+          <!-- Sorting Categories Filter & Sort Order Bar -->
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem; flex-wrap: wrap; gap: 0.75rem; background: #120e24; padding: 0.75rem 1rem; border-radius: 0.5rem; border: 1px solid #2e264f;">
+            <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+              <span style="font-size: 0.85rem; color: #a79fc2; font-weight: 600;">Sorting Category:</span>
+              <div id="chart-cat-chips" style="display: flex; gap: 0.35rem; flex-wrap: wrap;"></div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+              <span style="font-size: 0.85rem; color: #a79fc2; font-weight: 600;">Sort By:</span>
+              <select id="chart-sort-mode" style="background: #1c1735; color: #f5f3ff; border: 1px solid #3b3263; border-radius: 0.4rem; padding: 0.4rem 0.75rem; font-size: 0.85rem; cursor: pointer;">
+                <option value="category">Sorting Categories Order</option>
+                <option value="count">Project Count (High to Low)</option>
+                <option value="name">Alphabetical (A - Z)</option>
+              </select>
+            </div>
+          </div>
+
           <!-- Chart Layout -->
           <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 2rem; align-items: center;">
             <!-- Pie Chart SVG Container -->
@@ -791,6 +838,9 @@ __INITIAL_TABLE_ROWS__
     const pieHoverInfo = document.getElementById('pie-hover-info');
     const categoriesSortedList = document.getElementById('categories-sorted-list');
     const chartTotalCount = document.getElementById('chart-total-count');
+    const chartCatChips = document.getElementById('chart-cat-chips');
+    const chartSortMode = document.getElementById('chart-sort-mode');
+    let currentChartSortMode = 'category';
 
     // Helper: Escape HTML to prevent XSS
     function escapeHtml(str) {
@@ -945,6 +995,9 @@ __INITIAL_TABLE_ROWS__
     btnViewChart.addEventListener('click', slideToChart);
     btnBackToProjects.addEventListener('click', slideToProjects);
 
+    // Sorting categories configuration matching the Sort menu
+    const sortingCategories = ['Python', 'SQL', 'React', 'Fullstack'];
+
     // Color mapping for Pie Chart & Category Cards
     const categoryColorMap = {
       'Python': '#8b5cf6',
@@ -959,21 +1012,87 @@ __INITIAL_TABLE_ROWS__
       return defaultColorList[idx % defaultColorList.length];
     }
 
-    // Render Pie Chart & Sorted Category Breakdown
+    function getCategoryRank(name) {
+      const idx = sortingCategories.indexOf(name);
+      return idx === -1 ? (100 + (name ? name.charCodeAt(0) : 0)) : idx;
+    }
+
+    // Render Sorting Category Chips inside the Pie Chart view
+    function renderChartCatChips() {
+      if (!chartCatChips) return;
+      const chipOptions = ['All', ...sortingCategories];
+      chartCatChips.innerHTML = chipOptions.map(cat => {
+        const count = cat === 'All'
+          ? allProjects.length
+          : allProjects.filter(p => p.technology === cat).length;
+        const isActive = selectedTech === cat;
+        const activeClass = isActive ? 'active' : '';
+        return '<button type="button" class="cat-chip ' + activeClass + '" data-tech="' + cat + '">' +
+               '<span>' + cat + '</span>' +
+               '<span class="chip-count">' + count + '</span>' +
+               '</button>';
+      }).join('');
+    }
+
+    if (chartCatChips) {
+      chartCatChips.addEventListener('click', (e) => {
+        const btn = e.target.closest('.cat-chip');
+        if (!btn) return;
+        const cat = btn.getAttribute('data-tech');
+        if (cat) {
+          selectedTech = cat;
+          renderSortMenu();
+          renderTable();
+          renderChartCatChips();
+          renderPieChart();
+        }
+      });
+    }
+
+    if (chartSortMode) {
+      chartSortMode.addEventListener('change', (e) => {
+        currentChartSortMode = e.target.value;
+        renderPieChart();
+      });
+    }
+
+    // Render Pie Chart & Sorted Category Breakdown based on Sorting Categories
     function renderPieChart() {
+      renderChartCatChips();
+
       const counts = {};
       allProjects.forEach(p => {
         const cat = p.technology || 'Uncategorized';
         counts[cat] = (counts[cat] || 0) + 1;
       });
 
-      const sortedCategories = Object.keys(counts)
-        .map(cat => ({ name: cat, count: counts[cat] }))
-        .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+      // Include all predefined sorting categories, plus any other categories in projects
+      const allCategoryNames = Array.from(new Set([...sortingCategories, ...Object.keys(counts)]));
+
+      // Build data objects
+      let sortedCategories = allCategoryNames.map(cat => ({
+        name: cat,
+        count: counts[cat] || 0
+      }));
+
+      // Sort based on currentChartSortMode
+      if (currentChartSortMode === 'category') {
+        // Sorted strictly based on the sorting categories order
+        sortedCategories.sort((a, b) => getCategoryRank(a.name) - getCategoryRank(b.name));
+      } else if (currentChartSortMode === 'count') {
+        sortedCategories.sort((a, b) => b.count - a.count || getCategoryRank(a.name) - getCategoryRank(b.name));
+      } else if (currentChartSortMode === 'name') {
+        sortedCategories.sort((a, b) => a.name.localeCompare(b.name));
+      }
 
       const total = allProjects.length;
       if (chartTotalCount) {
-        chartTotalCount.textContent = 'Total: ' + total + ' project' + (total === 1 ? '' : 's');
+        if (selectedTech === 'All') {
+          chartTotalCount.textContent = 'Total: ' + total + ' project' + (total === 1 ? '' : 's');
+        } else {
+          const catCount = counts[selectedTech] || 0;
+          chartTotalCount.textContent = selectedTech + ': ' + catCount + ' of ' + total;
+        }
       }
 
       if (total === 0) {
@@ -986,9 +1105,12 @@ __INITIAL_TABLE_ROWS__
         return;
       }
 
+      // Slices to draw: non-zero categories in sorted order
+      const nonZeroCategories = sortedCategories.filter(d => d.count > 0);
+
       const cx = 140, cy = 140, r = 110, rInner = 58;
       let currentAngle = -Math.PI / 2;
-      const slices = sortedCategories.map((d, idx) => {
+      const slices = nonZeroCategories.map((d, idx) => {
         const fraction = d.count / total;
         const percent = Math.round(fraction * 1000) / 10;
         const color = getCategoryColor(d.name, idx);
@@ -998,7 +1120,7 @@ __INITIAL_TABLE_ROWS__
         currentAngle = endAngle;
 
         let path = '';
-        if (sortedCategories.length === 1 || fraction >= 0.9999) {
+        if (nonZeroCategories.length === 1 || fraction >= 0.9999) {
           path = 'M ' + cx + ' ' + (cy - r) +
                  ' A ' + r + ' ' + r + ' 0 1 1 ' + cx + ' ' + (cy + r) +
                  ' A ' + r + ' ' + r + ' 0 1 1 ' + cx + ' ' + (cy - r) +
@@ -1021,18 +1143,22 @@ __INITIAL_TABLE_ROWS__
                  ' A ' + rInner + ' ' + rInner + ' 0 ' + largeArc + ' 0 ' + x4 + ' ' + y4 + ' Z';
         }
 
+        const isHighlighted = selectedTech === d.name;
+
         return {
           name: d.name,
           count: d.count,
           percent: percent,
           color: color,
-          path: path
+          path: path,
+          isHighlighted: isHighlighted
         };
       });
 
       let svgHtml = '<svg viewBox="0 0 280 280" width="280" height="280">';
       slices.forEach((s) => {
-        svgHtml += '<path class="pie-slice" data-cat="' + escapeHtml(s.name) + '" data-count="' + s.count + '" data-pct="' + s.percent + '" fill="' + s.color + '" stroke="#1c1735" stroke-width="2" d="' + s.path + '"></path>';
+        const highlightStyle = s.isHighlighted ? 'filter: drop-shadow(0 0 12px ' + s.color + '); stroke: #fff; stroke-width: 3;' : 'stroke: #1c1735; stroke-width: 2;';
+        svgHtml += '<path class="pie-slice" data-cat="' + escapeHtml(s.name) + '" data-count="' + s.count + '" data-pct="' + s.percent + '" fill="' + s.color + '" style="' + highlightStyle + '" d="' + s.path + '"></path>';
       });
       svgHtml += '<circle cx="' + cx + '" cy="' + cy + '" r="' + (rInner - 2) + '" fill="#120e24" />' +
                  '<text x="' + cx + '" y="' + (cy - 4) + '" text-anchor="middle" font-size="24" font-weight="700" fill="#f5f3ff">' + total + '</text>' +
@@ -1041,22 +1167,38 @@ __INITIAL_TABLE_ROWS__
 
       pieChartContainer.innerHTML = svgHtml;
 
+      // Update hover info default
+      if (selectedTech !== 'All') {
+        const selCount = counts[selectedTech] || 0;
+        const selPct = total > 0 ? (Math.round((selCount / total) * 1000) / 10) : 0;
+        pieHoverInfo.textContent = 'Active Category: ' + selectedTech + ' (' + selCount + ' projects, ' + selPct + '%)';
+      } else {
+        pieHoverInfo.textContent = 'Hover over or click a slice for details';
+      }
+
+      // Build Sorted Breakdown Cards
       let cardsHtml = '';
-      slices.forEach((s, idx) => {
-        cardsHtml += '<div class="category-card" data-tech="' + escapeHtml(s.name) + '">' +
+      sortedCategories.forEach((s, idx) => {
+        const percent = total > 0 ? (Math.round((s.count / total) * 1000) / 10) : 0;
+        const color = getCategoryColor(s.name, idx);
+        const isSelected = selectedTech === s.name;
+        const cardBorder = isSelected ? 'border: 2px solid #c084fc; box-shadow: 0 0 12px rgba(192, 132, 252, 0.35);' : '';
+
+        cardsHtml += '<div class="category-card" data-tech="' + escapeHtml(s.name) + '" style="' + cardBorder + '">' +
           '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.45rem;">' +
             '<div style="display: flex; align-items: center; gap: 0.5rem;">' +
               '<span style="font-size: 0.75rem; font-weight: 700; color: #a79fc2; background: #1c1735; padding: 0.15rem 0.45rem; border-radius: 0.25rem;">#' + (idx + 1) + '</span>' +
-              '<span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: ' + s.color + ';"></span>' +
+              '<span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: ' + color + ';"></span>' +
               '<strong style="color: #f5f3ff;">' + escapeHtml(s.name) + '</strong>' +
+              (isSelected ? ' <span style="font-size: 0.7rem; background: #7c3aed; color: #fff; padding: 0.1rem 0.45rem; border-radius: 4px; font-weight: 700;">Active Filter</span>' : '') +
             '</div>' +
             '<div>' +
-              '<span style="font-weight: 700; color: #c084fc;">' + s.count + ' project' + (s.count === 1 ? '' : 's') + '</span>' +
-              '<span style="color: #a79fc2; font-size: 0.85rem; margin-left: 0.4rem;">(' + s.percent + '%)</span>' +
+              '<span style="font-weight: 700; color: ' + (s.count > 0 ? '#c084fc' : '#64748b') + ';">' + s.count + ' project' + (s.count === 1 ? '' : 's') + '</span>' +
+              '<span style="color: #a79fc2; font-size: 0.85rem; margin-left: 0.4rem;">(' + percent + '%)</span>' +
             '</div>' +
           '</div>' +
           '<div style="width: 100%; height: 6px; background: #0c0919; border-radius: 3px; overflow: hidden;">' +
-            '<div style="width: ' + s.percent + '%; height: 100%; background: ' + s.color + '; border-radius: 3px; transition: width 0.4s ease;"></div>' +
+            '<div style="width: ' + percent + '%; height: 100%; background: ' + color + '; border-radius: 3px; transition: width 0.4s ease;"></div>' +
           '</div>' +
           '<div style="text-align: right; margin-top: 0.35rem;">' +
             '<span style="font-size: 0.75rem; color: #a79fc2;">Click to filter table by ' + escapeHtml(s.name) + ' →</span>' +
