@@ -277,10 +277,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 f'<td style="color: #a79fc2;">{pdesc}</td>'
                 f'<td><span class="badge {badge_class}">{ptech}</span></td>'
                 f'<td><span class="status-badge">{pstatus}</span></td>'
-                f'<td>'
-                f'<button type="button" class="btn-edit" data-id="{pid}">✏️ Edit</button>'
-                f'<button type="button" class="btn-danger" data-id="{pid}">Delete</button>'
-                f'</td>'
+                f'<td><button type="button" class="btn-danger" data-id="{pid}">Delete</button></td>'
                 f'</tr>'
             )
         rows_html = "".join(row_items) if row_items else '<tr><td colspan="6" style="text-align: center; color: #64748b; padding: 2rem;">No records found in database.</td></tr>'
@@ -888,10 +885,7 @@ __INITIAL_TABLE_ROWS__
           '<td style="color: #a79fc2;">' + highlight(p.description, searchQuery) + '</td>' +
           '<td><span class="badge ' + badgeClass + '">' + escapeHtml(p.technology) + '</span></td>' +
           '<td><span class="status-badge">' + escapeHtml(p.status) + '</span></td>' +
-          '<td>' +
-          '<button type="button" class="btn-edit" data-id="' + p.id + '">✏️ Edit</button>' +
-          '<button type="button" class="btn-danger" data-id="' + p.id + '">Delete</button>' +
-          '</td>' +
+          '<td><button type="button" class="btn-danger" data-id="' + p.id + '">Delete</button></td>' +
           '</tr>';
       }).join('');
 
@@ -900,22 +894,8 @@ __INITIAL_TABLE_ROWS__
 
     }
 
-    // Event delegation: Edit and Delete project rows
+    // Event delegation: Delete project row
     projectsTbody.addEventListener('click', (e) => {
-      const editBtn = e.target.closest('.btn-edit');
-      if (editBtn) {
-        const id = editBtn.getAttribute('data-id');
-        if (id) {
-          tabEdit.classList.add('active');
-          tabAdd.classList.remove('active');
-          panelAdd.style.display = 'none';
-          panelEdit.style.display = 'block';
-          populateEditSelect(id);
-          editName.focus();
-          panelEdit.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }
-        return;
-      }
       const deleteBtn = e.target.closest('.btn-danger');
       if (deleteBtn) {
         const id = deleteBtn.getAttribute('data-id');
