@@ -12,11 +12,16 @@ import json
 import sqlite3
 import os
 import urllib.parse
+import hashlib
+import secrets
 from html import escape as html_escape
 
 PORT = int(os.environ.get("PORT", 5050))
 DB_FILE = os.path.join(os.path.dirname(__file__), "database.db")
 socketserver.TCPServer.allow_reuse_address = True
+
+def hash_password(password: str, salt: str) -> str:
+    return hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
 
 # -------------------------------------------------------------
 # SQL Database Setup (SQLite)
@@ -26,6 +31,28 @@ def init_db():
     cursor = conn.cursor()
     
     # Create SQL tables
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE NOT NULL,
+        email TEXT,
+        password_hash TEXT NOT NULL,
+        salt TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+
+    # Seed default demo account ('admin' / 'password123') if empty
+    cursor.execute("SELECT COUNT(*) FROM users;")
+    if cursor.fetchone()[0] == 0:
+        demo_salt = "demo_salt_seed_123"
+        demo_hash = hash_password("password123", demo_salt)
+        cursor.execute("""
+        INSERT INTO users (username, email, password_hash, salt)
+        VALUES (?, ?, ?, ?)
+        """, ("admin", "admin@example.com", demo_hash, demo_salt))
+        conn.commit()
+
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS projects (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,7 +108,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             parsed = urllib.parse.urlparse(self.path)
             path = parsed.path
 
-            if path == "/" or path == "/index.html":
+            if path in ("/", "/index.html", "/login"):
                 self.serve_react_app()
             elif path == "/api/projects":
                 conn = sqlite3.connect(DB_FILE)
@@ -184,6 +211,79 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 self._send_json(200, {"rows": rows, "count": len(rows)})
             except Exception as e:
                 self._send_json(400, {"error": str(e)})
+        elif path == "/api/auth/signup":
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length).decode("utf-8")
+            data = json.loads(body)
+
+            username = data.get("username", "").strip()
+            email = data.get("email", "").strip()
+            password = data.get("password", "").strip()
+
+            if not username or not password:
+                self._send_json(400, {"error": "Username and password are required"})
+                return
+
+            if len(password) < 4:
+                self._send_json(400, {"error": "Password must be at least 4 characters long"})
+                return
+
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM users WHERE LOWER(username) = LOWER(?)", (username,))
+            if cursor.fetchone():
+                conn.close()
+                self._send_json(409, {"error": "Username is already taken. Please choose another username or sign in."})
+                return
+
+            salt = secrets.token_hex(8)
+            pwd_hash = hash_password(password, salt)
+            cursor.execute(
+                "INSERT INTO users (username, email, password_hash, salt) VALUES (?, ?, ?, ?)",
+                (username, email, pwd_hash, salt)
+            )
+            conn.commit()
+            new_user_id = cursor.lastrowid
+            conn.close()
+
+            self._send_json(201, {
+                "success": True,
+                "message": "Account created successfully!",
+                "user": {"id": new_user_id, "username": username, "email": email}
+            })
+
+        elif path == "/api/auth/signin":
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length).decode("utf-8")
+            data = json.loads(body)
+
+            username = data.get("username", "").strip()
+            password = data.get("password", "").strip()
+
+            if not username or not password:
+                self._send_json(400, {"error": "Username and password are required"})
+                return
+
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, username, email, password_hash, salt FROM users WHERE LOWER(username) = LOWER(?)", (username,))
+            row = cursor.fetchone()
+            conn.close()
+
+            if not row:
+                self._send_json(401, {"error": "Account not found. Please check your username or sign up."})
+                return
+
+            user_id, uname, email, stored_hash, salt = row
+            if hash_password(password, salt) != stored_hash:
+                self._send_json(401, {"error": "Incorrect password. Please try again."})
+                return
+
+            self._send_json(200, {
+                "success": True,
+                "message": "Signed in successfully!",
+                "user": {"id": user_id, "username": uname, "email": email}
+            })
         else:
             self.send_error(404, "Not Found")
 
@@ -505,41 +605,342 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
       transform: translateY(-2px);
       box-shadow: 0 4px 12px rgba(168, 85, 247, 0.2);
     }
-    .cat-chip {
-      background: #1c1735;
-      color: #a79fc2;
-      border: 1px solid #3b3263;
-      border-radius: 9999px;
-      padding: 0.3rem 0.7rem;
-      font-size: 0.8rem;
-      font-weight: 600;
-      cursor: pointer;
-      display: inline-flex;
+    /* Starting Webpage: Login & Sign Up */
+    .auth-wrapper {
+      min-height: 100vh;
+      display: flex;
       align-items: center;
+      justify-content: center;
+      padding: 2rem 1rem;
+      background: radial-gradient(circle at 50% 20%, #1e1642 0%, #0c0919 75%);
+    }
+    .auth-card {
+      background: #120e24;
+      border: 1px solid #2e264f;
+      border-radius: 1rem;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.7), 0 0 40px rgba(124, 58, 237, 0.15);
+      width: 100%;
+      max-width: 440px;
+      padding: 2.25rem;
+      animation: slideSwap 0.35s ease-out;
+    }
+    .auth-header {
+      text-align: center;
+      margin-bottom: 1.75rem;
+    }
+    .auth-icon-badge {
+      width: 58px;
+      height: 58px;
+      margin: 0 auto 1rem;
+      background: linear-gradient(135deg, #7c3aed, #c084fc);
+      border-radius: 1rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.85rem;
+      box-shadow: 0 8px 24px rgba(124, 58, 237, 0.45);
+    }
+    .auth-tabs {
+      display: flex;
+      background: #0c0919;
+      padding: 0.35rem;
+      border-radius: 0.65rem;
+      border: 1px solid #2e264f;
+      margin-bottom: 1.5rem;
       gap: 0.35rem;
+    }
+    .auth-tab-btn {
+      flex: 1;
+      background: transparent;
+      color: #a79fc2;
+      border: none;
+      padding: 0.7rem;
+      border-radius: 0.45rem;
+      font-weight: 700;
+      font-size: 0.95rem;
+      cursor: pointer;
       transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.4rem;
     }
-    .cat-chip:hover {
-      background: #282147;
+    .auth-tab-btn:hover {
       color: #f5f3ff;
-      border-color: #c084fc;
+      background: rgba(168, 85, 247, 0.15);
     }
-    .cat-chip.active {
+    .auth-tab-btn.active {
       background: #7c3aed;
       color: white;
-      border-color: #a855f7;
-      box-shadow: 0 0 10px rgba(124, 58, 237, 0.4);
+      box-shadow: 0 0 14px rgba(124, 58, 237, 0.45);
     }
-    .cat-chip .chip-count {
-      background: rgba(0, 0, 0, 0.35);
-      padding: 0.1rem 0.45rem;
+    .auth-field {
+      margin-bottom: 1.15rem;
+    }
+    .auth-field label {
+      display: block;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: #d8b4fe;
+      margin-bottom: 0.4rem;
+    }
+    .input-with-icon {
+      position: relative;
+    }
+    .input-with-icon input {
+      width: 100%;
+      padding-left: 2.75rem;
+    }
+    .input-with-icon .field-icon {
+      position: absolute;
+      left: 1rem;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 1rem;
+      color: #8b5cf6;
+      pointer-events: none;
+    }
+    .btn-auth-primary {
+      width: 100%;
+      background: linear-gradient(135deg, #7c3aed 0%, #9333ea 100%);
+      color: white;
+      padding: 0.85rem;
+      border-radius: 0.5rem;
+      border: none;
+      font-weight: 700;
+      font-size: 1rem;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      margin-top: 0.5rem;
+      box-shadow: 0 4px 18px rgba(124, 58, 237, 0.4);
+    }
+    .btn-auth-primary:hover {
+      background: linear-gradient(135deg, #6d28d9 0%, #7e22ce 100%);
+      transform: translateY(-1px);
+      box-shadow: 0 6px 22px rgba(124, 58, 237, 0.55);
+    }
+    .demo-box {
+      margin-top: 1.25rem;
+      background: #1c1735;
+      border: 1px dashed #4c3f7a;
+      border-radius: 0.5rem;
+      padding: 0.7rem 0.85rem;
+      font-size: 0.82rem;
+      color: #c4b5fd;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .demo-box:hover {
+      background: #251d45;
+      border-color: #c084fc;
+    }
+    .demo-tag {
+      background: #0c0919;
+      padding: 0.15rem 0.5rem;
+      border-radius: 0.35rem;
+      font-family: monospace;
+      color: #a7f3d0;
+      font-weight: 600;
+    }
+    .auth-footer-text {
+      margin-top: 1.25rem;
+      text-align: center;
+      font-size: 0.85rem;
+      color: #94a3b8;
+    }
+    .auth-alert {
+      padding: 0.75rem 1rem;
+      border-radius: 0.5rem;
+      font-size: 0.85rem;
+      margin-bottom: 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .auth-alert-error {
+      background: rgba(239, 68, 68, 0.18);
+      border: 1px solid rgba(239, 68, 68, 0.4);
+      color: #fca5a5;
+    }
+    .auth-alert-success {
+      background: rgba(16, 185, 129, 0.18);
+      border: 1px solid rgba(16, 185, 129, 0.4);
+      color: #6ee7b7;
+    }
+    .user-session-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.6rem;
+      background: #1c1735;
+      border: 1px solid #3b3263;
       border-radius: 9999px;
-      font-size: 0.7rem;
+      padding: 0.35rem 0.55rem 0.35rem 0.85rem;
+    }
+    .btn-signout {
+      background: rgba(239, 68, 68, 0.2);
+      color: #fca5a5;
+      border: 1px solid rgba(239, 68, 68, 0.4);
+      padding: 0.3rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-signout:hover {
+      background: #ef4444;
+      color: white;
+      border-color: #ef4444;
     }
   </style>
 </head>
 <body>
-  <div class="container">
+  <!-- Starting Webpage: Login & Sign Up Screen -->
+  <div id="auth-container" class="auth-wrapper">
+    <div class="auth-card">
+      <div class="auth-header">
+        <div class="auth-icon-badge">🚀</div>
+        <h1 style="font-size: 1.85rem; font-weight: 800; color: #f5f3ff; margin-bottom: 0.35rem;">
+          Full-Stack Web App
+        </h1>
+        <p style="color: #94a3b8; font-size: 0.9rem;">
+          Sign in or create an account to access the database & project manager
+        </p>
+      </div>
+
+      <!-- Auth Toggle Tabs: Sign In / Sign Up -->
+      <div class="auth-tabs">
+        <button type="button" id="auth-tab-signin" class="auth-tab-btn active">
+          🔑 Sign In
+        </button>
+        <button type="button" id="auth-tab-signup" class="auth-tab-btn">
+          ✨ Sign Up
+        </button>
+      </div>
+
+      <!-- Feedback Alert Box -->
+      <div id="auth-alert" class="auth-alert" style="display: none;"></div>
+
+      <!-- FORM 1: Sign In Form -->
+      <form id="form-signin" onsubmit="return false;">
+        <div class="auth-field">
+          <label for="signin-username">Username or Email</label>
+          <div class="input-with-icon">
+            <span class="field-icon">👤</span>
+            <input
+              type="text"
+              id="signin-username"
+              placeholder="Enter your username"
+              autocomplete="username"
+              required
+            />
+          </div>
+        </div>
+
+        <div class="auth-field">
+          <label for="signin-password">Password</label>
+          <div class="input-with-icon">
+            <span class="field-icon">🔒</span>
+            <input
+              type="password"
+              id="signin-password"
+              placeholder="Enter your password"
+              autocomplete="current-password"
+              required
+            />
+          </div>
+        </div>
+
+        <button type="submit" id="btn-signin-submit" class="btn-auth-primary">
+          Sign In →
+        </button>
+
+        <div class="demo-box" id="demo-fill-btn" title="Click to fill demo credentials">
+          <span>💡 <strong>Demo Account:</strong></span>
+          <span class="demo-tag">admin / password123</span>
+          <span style="font-size: 0.75rem; color: #c084fc; text-decoration: underline; margin-left: auto;">Auto-fill</span>
+        </div>
+
+        <div class="auth-footer-text">
+          Don't have an account yet?
+          <button type="button" class="btn-link" id="link-to-signup">Sign up here</button>
+        </div>
+      </form>
+
+      <!-- FORM 2: Sign Up Form -->
+      <form id="form-signup" onsubmit="return false;" style="display: none;">
+        <div class="auth-field">
+          <label for="signup-username">Username <span style="color: #c084fc;">*</span></label>
+          <div class="input-with-icon">
+            <span class="field-icon">👤</span>
+            <input
+              type="text"
+              id="signup-username"
+              placeholder="Choose a username (e.g. alex)"
+              autocomplete="username"
+              required
+            />
+          </div>
+        </div>
+
+        <div class="auth-field">
+          <label for="signup-email">Email Address <span style="color: #64748b;">(optional)</span></label>
+          <div class="input-with-icon">
+            <span class="field-icon">✉️</span>
+            <input
+              type="email"
+              id="signup-email"
+              placeholder="alex@example.com"
+              autocomplete="email"
+            />
+          </div>
+        </div>
+
+        <div class="auth-field">
+          <label for="signup-password">Password <span style="color: #c084fc;">*</span></label>
+          <div class="input-with-icon">
+            <span class="field-icon">🔒</span>
+            <input
+              type="password"
+              id="signup-password"
+              placeholder="Create a password (min. 4 characters)"
+              autocomplete="new-password"
+              required
+            />
+          </div>
+        </div>
+
+        <div class="auth-field">
+          <label for="signup-password-confirm">Confirm Password <span style="color: #c084fc;">*</span></label>
+          <div class="input-with-icon">
+            <span class="field-icon">🔐</span>
+            <input
+              type="password"
+              id="signup-password-confirm"
+              placeholder="Re-enter your password"
+              autocomplete="new-password"
+              required
+            />
+          </div>
+        </div>
+
+        <button type="submit" id="btn-signup-submit" class="btn-auth-primary">
+          Create Account (SQL INSERT) →
+        </button>
+
+        <div class="auth-footer-text">
+          Already have an account?
+          <button type="button" class="btn-link" id="link-to-signin">Sign in here</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Main App Dashboard (Visible when signed in) -->
+  <div id="app-container" class="container" style="display: none;">
     <header>
       <div>
         <h1>Full-Stack Web App</h1>
@@ -547,10 +948,19 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
           Python Backend (HTTP REST) + SQL Database (SQLite) + Interactive UI
         </p>
       </div>
-      <div class="badges">
-        <span class="badge badge-py">Python 3</span>
-        <span class="badge badge-sql">SQLite SQL</span>
-        <span class="badge badge-react">Interactive UI</span>
+      <div style="display: flex; align-items: center; gap: 0.85rem; flex-wrap: wrap;">
+        <div class="badges">
+          <span class="badge badge-py">Python 3</span>
+          <span class="badge badge-sql">SQLite SQL</span>
+          <span class="badge badge-react">Interactive UI</span>
+        </div>
+        <div class="user-session-pill">
+          <span>👤</span>
+          <span id="current-user-display" style="font-weight: 700; color: #f5f3ff; font-size: 0.85rem;">User</span>
+          <button type="button" id="btn-signout" class="btn-signout" title="Sign out of account">
+            🚪 Sign Out
+          </button>
+        </div>
       </div>
     </header>
 
@@ -758,7 +1168,29 @@ __INITIAL_TABLE_ROWS__
     let selectedTech = 'All';
     const techOptions = ['All', 'Python', 'SQL', 'React', 'Fullstack'];
 
-    // DOM Elements
+    // DOM Elements - Auth & App Containers
+    const authContainer = document.getElementById('auth-container');
+    const appContainer = document.getElementById('app-container');
+    const authTabSignin = document.getElementById('auth-tab-signin');
+    const authTabSignup = document.getElementById('auth-tab-signup');
+    const formSignin = document.getElementById('form-signin');
+    const formSignup = document.getElementById('form-signup');
+    const signinUsername = document.getElementById('signin-username');
+    const signinPassword = document.getElementById('signin-password');
+    const signupUsername = document.getElementById('signup-username');
+    const signupEmail = document.getElementById('signup-email');
+    const signupPassword = document.getElementById('signup-password');
+    const signupPasswordConfirm = document.getElementById('signup-password-confirm');
+    const authAlert = document.getElementById('auth-alert');
+    const btnSigninSubmit = document.getElementById('btn-signin-submit');
+    const btnSignupSubmit = document.getElementById('btn-signup-submit');
+    const demoFillBtn = document.getElementById('demo-fill-btn');
+    const linkToSignup = document.getElementById('link-to-signup');
+    const linkToSignin = document.getElementById('link-to-signin');
+    const currentUserDisplay = document.getElementById('current-user-display');
+    const btnSignout = document.getElementById('btn-signout');
+
+    // DOM Elements - App Components
     const projectsTbody = document.getElementById('projects-tbody');
     const recordsCounter = document.getElementById('records-counter');
     const searchInput = document.getElementById('search-input');
@@ -1490,6 +1922,189 @@ __INITIAL_TABLE_ROWS__
 
     // Background live refreshes
     fetchProjects();
+
+    // =============================================================
+    // Authentication & Starting Webpage Logic
+    // =============================================================
+    function showAuthAlert(msg, type = 'error') {
+      if (!authAlert) return;
+      authAlert.textContent = msg;
+      authAlert.className = 'auth-alert ' + (type === 'success' ? 'auth-alert-success' : 'auth-alert-error');
+      authAlert.style.display = 'flex';
+    }
+
+    function clearAuthAlert() {
+      if (!authAlert) return;
+      authAlert.style.display = 'none';
+      authAlert.textContent = '';
+    }
+
+    function switchToSignin() {
+      clearAuthAlert();
+      if (authTabSignin) authTabSignin.classList.add('active');
+      if (authTabSignup) authTabSignup.classList.remove('active');
+      if (formSignin) formSignin.style.display = 'block';
+      if (formSignup) formSignup.style.display = 'none';
+      if (signinUsername) signinUsername.focus();
+    }
+
+    function switchToSignup() {
+      clearAuthAlert();
+      if (authTabSignup) authTabSignup.classList.add('active');
+      if (authTabSignin) authTabSignin.classList.remove('active');
+      if (formSignup) formSignup.style.display = 'block';
+      if (formSignin) formSignin.style.display = 'none';
+      if (signupUsername) signupUsername.focus();
+    }
+
+    if (authTabSignin) authTabSignin.addEventListener('click', switchToSignin);
+    if (authTabSignup) authTabSignup.addEventListener('click', switchToSignup);
+    if (linkToSignup) linkToSignup.addEventListener('click', switchToSignup);
+    if (linkToSignin) linkToSignin.addEventListener('click', switchToSignin);
+
+    if (demoFillBtn) {
+      demoFillBtn.addEventListener('click', () => {
+        switchToSignin();
+        if (signinUsername) signinUsername.value = 'admin';
+        if (signinPassword) signinPassword.value = 'password123';
+        clearAuthAlert();
+        showAuthAlert('Demo credentials filled! Click "Sign In →" to log in.', 'success');
+      });
+    }
+
+    function setLoggedInUser(user) {
+      sessionStorage.setItem('fullstack_user', JSON.stringify(user));
+      if (currentUserDisplay) currentUserDisplay.textContent = user.username || 'User';
+      if (authContainer) authContainer.style.display = 'none';
+      if (appContainer) {
+        appContainer.style.display = 'block';
+        appContainer.classList.add('slide-swap-in');
+      }
+    }
+
+    function logoutUser() {
+      sessionStorage.removeItem('fullstack_user');
+      if (signinPassword) signinPassword.value = '';
+      clearAuthAlert();
+      if (appContainer) appContainer.style.display = 'none';
+      if (authContainer) authContainer.style.display = 'flex';
+      switchToSignin();
+    }
+
+    if (btnSignout) btnSignout.addEventListener('click', logoutUser);
+
+    if (formSignin) {
+      formSignin.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const username = signinUsername.value.trim();
+        const password = signinPassword.value;
+
+        if (!username || !password) {
+          showAuthAlert('Please enter both username and password.');
+          return;
+        }
+
+        if (btnSigninSubmit) {
+          btnSigninSubmit.disabled = true;
+          btnSigninSubmit.textContent = 'Signing in...';
+        }
+        clearAuthAlert();
+
+        try {
+          const res = await fetch('/api/auth/signin', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password })
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            throw new Error(data.error || 'Failed to sign in');
+          }
+          setLoggedInUser(data.user);
+        } catch (err) {
+          showAuthAlert(err.message, 'error');
+        } finally {
+          if (btnSigninSubmit) {
+            btnSigninSubmit.disabled = false;
+            btnSigninSubmit.textContent = 'Sign In →';
+          }
+        }
+      });
+    }
+
+    if (formSignup) {
+      formSignup.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const username = signupUsername.value.trim();
+        const email = signupEmail.value.trim();
+        const password = signupPassword.value;
+        const confirmPassword = signupPasswordConfirm.value;
+
+        if (!username || !password) {
+          showAuthAlert('Username and password are required.');
+          return;
+        }
+
+        if (password.length < 4) {
+          showAuthAlert('Password must be at least 4 characters long.');
+          return;
+        }
+
+        if (password !== confirmPassword) {
+          showAuthAlert('Passwords do not match. Please re-enter.');
+          signupPasswordConfirm.focus();
+          return;
+        }
+
+        if (btnSignupSubmit) {
+          btnSignupSubmit.disabled = true;
+          btnSignupSubmit.textContent = 'Creating account...';
+        }
+        clearAuthAlert();
+
+        try {
+          const res = await fetch('/api/auth/signup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, email, password })
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            throw new Error(data.error || 'Failed to create account');
+          }
+          showAuthAlert('Account created successfully! Signing in...', 'success');
+          setTimeout(() => {
+            setLoggedInUser(data.user);
+          }, 600);
+        } catch (err) {
+          showAuthAlert(err.message, 'error');
+        } finally {
+          if (btnSignupSubmit) {
+            btnSignupSubmit.disabled = false;
+            btnSignupSubmit.textContent = 'Create Account (SQL INSERT) →';
+          }
+        }
+      });
+    }
+
+    // Check existing session or default to starting login page
+    const savedUserStr = sessionStorage.getItem('fullstack_user');
+    if (savedUserStr) {
+      try {
+        const savedUser = JSON.parse(savedUserStr);
+        if (savedUser && savedUser.username) {
+          setLoggedInUser(savedUser);
+        } else {
+          logoutUser();
+        }
+      } catch (e) {
+        logoutUser();
+      }
+    } else {
+      // Default to Starting Webpage: Login & Sign Up screen
+      if (authContainer) authContainer.style.display = 'flex';
+      if (appContainer) appContainer.style.display = 'none';
+    }
   </script>
 </body>
 </html>
