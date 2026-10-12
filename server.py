@@ -719,32 +719,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
       transform: translateY(-1px);
       box-shadow: 0 6px 22px rgba(124, 58, 237, 0.55);
     }
-    .demo-box {
-      margin-top: 1.25rem;
-      background: #1c1735;
-      border: 1px dashed #4c3f7a;
-      border-radius: 0.5rem;
-      padding: 0.7rem 0.85rem;
-      font-size: 0.82rem;
-      color: #c4b5fd;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-    .demo-box:hover {
-      background: #251d45;
-      border-color: #c084fc;
-    }
-    .demo-tag {
-      background: #0c0919;
-      padding: 0.15rem 0.5rem;
-      border-radius: 0.35rem;
-      font-family: monospace;
-      color: #a7f3d0;
-      font-weight: 600;
-    }
+
     .auth-footer-text {
       margin-top: 1.25rem;
       text-align: center;
@@ -858,12 +833,6 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
           Sign In →
         </button>
 
-        <div class="demo-box" id="demo-fill-btn" title="Click to fill demo credentials">
-          <span>💡 <strong>Demo Account:</strong></span>
-          <span class="demo-tag">admin / password123</span>
-          <span style="font-size: 0.75rem; color: #c084fc; text-decoration: underline; margin-left: auto;">Auto-fill</span>
-        </div>
-
         <div class="auth-footer-text">
           Don't have an account yet?
           <button type="button" class="btn-link" id="link-to-signup">Sign up here</button>
@@ -928,7 +897,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         </div>
 
         <button type="submit" id="btn-signup-submit" class="btn-auth-primary">
-          Create Account (SQL INSERT) →
+          Create Account →
         </button>
 
         <div class="auth-footer-text">
@@ -1184,7 +1153,6 @@ __INITIAL_TABLE_ROWS__
     const authAlert = document.getElementById('auth-alert');
     const btnSigninSubmit = document.getElementById('btn-signin-submit');
     const btnSignupSubmit = document.getElementById('btn-signup-submit');
-    const demoFillBtn = document.getElementById('demo-fill-btn');
     const linkToSignup = document.getElementById('link-to-signup');
     const linkToSignin = document.getElementById('link-to-signin');
     const currentUserDisplay = document.getElementById('current-user-display');
@@ -1962,16 +1930,6 @@ __INITIAL_TABLE_ROWS__
     if (linkToSignup) linkToSignup.addEventListener('click', switchToSignup);
     if (linkToSignin) linkToSignin.addEventListener('click', switchToSignin);
 
-    if (demoFillBtn) {
-      demoFillBtn.addEventListener('click', () => {
-        switchToSignin();
-        if (signinUsername) signinUsername.value = 'admin';
-        if (signinPassword) signinPassword.value = 'password123';
-        clearAuthAlert();
-        showAuthAlert('Demo credentials filled! Click "Sign In →" to log in.', 'success');
-      });
-    }
-
     function setLoggedInUser(user) {
       sessionStorage.setItem('fullstack_user', JSON.stringify(user));
       if (currentUserDisplay) currentUserDisplay.textContent = user.username || 'User';
@@ -2072,16 +2030,15 @@ __INITIAL_TABLE_ROWS__
           if (!res.ok) {
             throw new Error(data.error || 'Failed to create account');
           }
-          showAuthAlert('Account created successfully! Signing in...', 'success');
-          setTimeout(() => {
-            setLoggedInUser(data.user);
-          }, 600);
+          // Real-time immediate save & login without delay
+          setLoggedInUser(data.user);
+          fetchProjects();
         } catch (err) {
           showAuthAlert(err.message, 'error');
         } finally {
           if (btnSignupSubmit) {
             btnSignupSubmit.disabled = false;
-            btnSignupSubmit.textContent = 'Create Account (SQL INSERT) →';
+            btnSignupSubmit.textContent = 'Create Account →';
           }
         }
       });
