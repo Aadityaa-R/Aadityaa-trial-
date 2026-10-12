@@ -235,15 +235,21 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         rows_html = "".join(row_items) if row_items else '<tr><td colspan="6" style="text-align: center; color: #64748b; padding: 2rem;">No records found in database.</td></tr>'
 
         tech_opts = ['All', 'Python', 'SQL', 'React', 'Fullstack']
-        chip_items = []
+        sort_items = []
         for t in tech_opts:
             if t == 'All':
                 count = len(initial_projects)
             else:
                 count = sum(1 for p in initial_projects if p.get('technology') == t)
             active = "active" if t == "All" else ""
-            chip_items.append(f'<button type="button" class="chip {active}" data-tech="{t}">{t} ({count})</button>')
-        chips_html = "".join(chip_items)
+            check = "✓ " if t == "All" else ""
+            sort_items.append(
+                f'<button type="button" class="sort-option {active}" data-tech="{t}">'
+                f'<span>{check}{t}</span>'
+                f'<span class="sort-badge">{count}</span>'
+                f'</button>'
+            )
+        sort_options_html = "".join(sort_items)
         counter_text = f"Showing all {len(initial_projects)} records"
 
         page_template = """<!DOCTYPE html>
@@ -288,10 +294,68 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     .search-icon { position: absolute; left: 1rem; top: 50%; transform: translateY(-50%); color: #64748b; font-size: 1rem; pointer-events: none; }
     .clear-btn { position: absolute; right: 0.75rem; top: 50%; transform: translateY(-50%); background: transparent; border: none; color: #94a3b8; font-size: 1.1rem; cursor: pointer; padding: 0.25rem; }
     .clear-btn:hover { color: #f8fafc; background: transparent; }
-    .filter-chips { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
-    .chip { padding: 0.45rem 1rem; border-radius: 9999px; font-size: 0.85rem; font-weight: 600; cursor: pointer; background: #0f172a; border: 1px solid #334155; color: #94a3b8; transition: all 0.2s; }
-    .chip:hover { border-color: #38bdf8; color: white; background: #1e293b; }
-    .chip.active { background: #0284c7; border-color: #38bdf8; color: white; box-shadow: 0 0 10px rgba(56, 189, 248, 0.4); }
+    .btn-sort {
+      background: #1e293b;
+      color: #f8fafc;
+      border: 1px solid #475569;
+      border-radius: 0.5rem;
+      padding: 0.75rem 1.25rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      white-space: nowrap;
+      transition: all 0.2s;
+    }
+    .btn-sort:hover {
+      background: #334155;
+      border-color: #38bdf8;
+    }
+    .sort-dropdown-menu {
+      position: absolute;
+      top: calc(100% + 0.5rem);
+      right: 0;
+      background: #1e293b;
+      border: 1px solid #475569;
+      border-radius: 0.5rem;
+      min-width: 200px;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+      z-index: 50;
+      overflow: hidden;
+      padding: 0.25rem 0;
+    }
+    .sort-option {
+      width: 100%;
+      text-align: left;
+      padding: 0.65rem 1rem;
+      background: transparent;
+      border: none;
+      border-radius: 0;
+      color: #e2e8f0;
+      font-size: 0.9rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .sort-option:hover {
+      background: #0284c7;
+      color: white;
+    }
+    .sort-option.active {
+      background: rgba(2, 132, 199, 0.25);
+      color: #38bdf8;
+      font-weight: 700;
+    }
+    .sort-badge {
+      background: #0f172a;
+      padding: 0.15rem 0.55rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      color: #94a3b8;
+    }
     .search-meta { display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.75rem; }
     .highlight { background: rgba(56, 189, 248, 0.3); color: #38bdf8; font-weight: 700; border-radius: 0.2rem; padding: 0 0.2rem; }
     .btn-link { background: transparent; color: #38bdf8; border: none; padding: 0; font-size: 0.85rem; cursor: pointer; text-decoration: underline; }
@@ -370,9 +434,9 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         <span id="records-counter" style="font-size: 0.85rem; color: #94a3b8;">__INITIAL_COUNTER__</span>
       </div>
 
-      <!-- Live Search Box with dedicated Search Button -->
-      <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap;">
-        <div class="search-box-wrapper" style="flex: 1; min-width: 240px; margin-bottom: 0;">
+      <!-- Search & Sort Controls -->
+      <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; align-items: center;">
+        <div class="search-box-wrapper" style="flex: 1; min-width: 220px; margin-bottom: 0;">
           <span class="search-icon">🔍</span>
           <input
             type="text"
@@ -389,16 +453,21 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             title="Clear search"
           >✕</button>
         </div>
-        <button type="button" id="btn-search" style="padding: 0.75rem 1.5rem; white-space: nowrap;">
+        <button type="button" id="btn-search" style="padding: 0.75rem 1.25rem; white-space: nowrap;">
           🔍 Search
         </button>
-      </div>
 
-      <!-- Filter Buttons Header -->
-      <div style="margin-bottom: 0.5rem; font-size: 0.85rem; color: #94a3b8; font-weight: 600;">
-        Filter by Category:
+        <!-- Single Sort Button with Dropdown Menu -->
+        <div id="sort-wrapper" style="position: relative;">
+          <button type="button" id="btn-sort" class="btn-sort" title="Filter / Sort by category">
+            <span>Sort: <strong id="sort-current-label">All</strong></span>
+            <span id="sort-arrow" style="font-size: 0.75rem; margin-left: 0.25rem;">▼</span>
+          </button>
+          <div id="sort-dropdown-menu" class="sort-dropdown-menu" style="display: none;">
+__INITIAL_SORT_OPTIONS__
+          </div>
+        </div>
       </div>
-      <div class="filter-chips" id="filter-chips">__INITIAL_CHIPS__</div>
 
       <!-- Search Meta Indicator -->
       <div id="search-meta" class="search-meta" style="display: none;">
@@ -458,7 +527,11 @@ __INITIAL_TABLE_ROWS__
     const searchInput = document.getElementById('search-input');
     const btnSearch = document.getElementById('btn-search');
     const clearSearchBtn = document.getElementById('clear-search-btn');
-    const filterChipsContainer = document.getElementById('filter-chips');
+    const sortWrapper = document.getElementById('sort-wrapper');
+    const btnSort = document.getElementById('btn-sort');
+    const sortCurrentLabel = document.getElementById('sort-current-label');
+    const sortArrow = document.getElementById('sort-arrow');
+    const sortDropdownMenu = document.getElementById('sort-dropdown-menu');
     const searchMeta = document.getElementById('search-meta');
     const searchMetaText = document.getElementById('search-meta-text');
     const resetFiltersBtn = document.getElementById('reset-filters-btn');
@@ -504,27 +577,58 @@ __INITIAL_TABLE_ROWS__
       return result;
     }
 
-    // Render Filter Chips
-    function renderChips() {
-      filterChipsContainer.innerHTML = techOptions.map(t => {
+    // Render Sort Dropdown Menu options
+    function renderSortMenu() {
+      sortDropdownMenu.innerHTML = techOptions.map(t => {
         const count = t === 'All'
           ? allProjects.length
           : allProjects.filter(p => p.technology === t).length;
-        const activeClass = selectedTech === t ? 'active' : '';
-        return '<button type="button" class="chip ' + activeClass + '" data-tech="' + t + '">' +
-               t + ' (' + count + ')</button>';
+        const isSelected = selectedTech === t;
+        const activeClass = isSelected ? 'active' : '';
+        const checkIcon = isSelected ? '✓ ' : '';
+        return '<button type="button" class="sort-option ' + activeClass + '" data-tech="' + t + '">' +
+               '<span>' + checkIcon + t + '</span>' +
+               '<span class="sort-badge">' + count + '</span>' +
+               '</button>';
       }).join('');
+      sortCurrentLabel.textContent = selectedTech;
     }
 
-    // Event delegation: Clicking any category chip shows ONLY rows of that category!
-    filterChipsContainer.addEventListener('click', (e) => {
-      const btn = e.target.closest('.chip');
+    // Toggle Dropdown Menu
+    btnSort.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isOpen = sortDropdownMenu.style.display === 'block';
+      sortDropdownMenu.style.display = isOpen ? 'none' : 'block';
+      sortArrow.textContent = isOpen ? '▼' : '▲';
+    });
+
+    // Close Dropdown when clicking outside
+    document.addEventListener('click', (e) => {
+      if (sortWrapper && !sortWrapper.contains(e.target)) {
+        sortDropdownMenu.style.display = 'none';
+        sortArrow.textContent = '▼';
+      }
+    });
+
+    // Close Dropdown on Escape
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        sortDropdownMenu.style.display = 'none';
+        sortArrow.textContent = '▼';
+      }
+    });
+
+    // Event Delegation for Sort Option selection
+    sortDropdownMenu.addEventListener('click', (e) => {
+      const btn = e.target.closest('.sort-option');
       if (!btn) return;
       selectedTech = btn.getAttribute('data-tech');
       searchQuery = '';
       searchInput.value = '';
       clearSearchBtn.style.display = 'none';
-      renderChips();
+      sortDropdownMenu.style.display = 'none';
+      sortArrow.textContent = '▼';
+      renderSortMenu();
       renderTable();
     });
 
@@ -626,7 +730,7 @@ __INITIAL_TABLE_ROWS__
       selectedTech = 'All';
       searchInput.value = '';
       clearSearchBtn.style.display = 'none';
-      renderChips();
+      renderSortMenu();
       renderTable();
     }
     resetFiltersBtn.addEventListener('click', resetFilters);
@@ -670,7 +774,7 @@ __INITIAL_TABLE_ROWS__
         const res = await fetch('/api/projects');
         allProjects = await res.json();
         renderTable();
-        renderChips();
+        renderSortMenu();
       } catch (err) {
         console.error('Error fetching projects:', err);
         projectsTbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#ef4444; padding:2rem;">Error connecting to Python backend.</td></tr>';
@@ -731,7 +835,7 @@ __INITIAL_TABLE_ROWS__
       clearSearchBtn.style.display = 'none';
 
       // Update UI in real-time (0ms delay)
-      renderChips();
+      renderSortMenu();
       renderTable();
       statTotal.textContent = allProjects.length;
 
@@ -752,7 +856,7 @@ __INITIAL_TABLE_ROWS__
       } catch (err) {
         // Rollback on failure
         allProjects = allProjects.filter(p => p !== newRecord);
-        renderChips();
+        renderSortMenu();
         renderTable();
         statTotal.textContent = allProjects.length;
         alert('Error saving project to database: ' + err.message);
@@ -763,7 +867,7 @@ __INITIAL_TABLE_ROWS__
     async function deleteProject(id) {
       const prevProjects = [...allProjects];
       allProjects = allProjects.filter(p => String(p.id) !== String(id));
-      renderChips();
+      renderSortMenu();
       renderTable();
       statTotal.textContent = allProjects.length;
 
@@ -773,7 +877,7 @@ __INITIAL_TABLE_ROWS__
         fetchStats();
       } catch (err) {
         allProjects = prevProjects;
-        renderChips();
+        renderSortMenu();
         renderTable();
         statTotal.textContent = allProjects.length;
         alert('Error deleting project: ' + err.message);
@@ -801,7 +905,7 @@ __INITIAL_TABLE_ROWS__
     });
 
     // Initial instant render from pre-loaded SQLite data
-    renderChips();
+    renderSortMenu();
     renderTable();
 
     // Background live refreshes
@@ -815,7 +919,7 @@ __INITIAL_TABLE_ROWS__
                      .replace("__INITIAL_PROJECTS__", initial_json)
                      .replace("__TOTAL_COUNT__", str(total_count))
                      .replace("__INITIAL_TABLE_ROWS__", rows_html)
-                     .replace("__INITIAL_CHIPS__", chips_html)
+                     .replace("__INITIAL_SORT_OPTIONS__", sort_options_html)
                      .replace("__INITIAL_COUNTER__", counter_text))
         body = page_html.encode("utf-8")
         self.send_response(200)
