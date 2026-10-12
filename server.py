@@ -339,7 +339,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     <!-- Insert Form -->
     <div class="card">
       <h2>Add New Project (SQL INSERT)</h2>
-      <form id="project-form">
+      <form id="project-form" onsubmit="return false;">
         <div class="form-group">
           <input
             type="text"
@@ -485,13 +485,23 @@ __INITIAL_TABLE_ROWS__
         .replace(/'/g, '&#39;');
     }
 
-    // Helper: Highlight matching query terms
+    // Helper: Highlight matching query terms (safe substring matching without regex)
     function highlight(text, query) {
       const safeText = escapeHtml(text);
       if (!query || !query.trim()) return safeText;
-      const cleanQ = query.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const regex = new RegExp('(' + cleanQ + ')', 'gi');
-      return safeText.replace(regex, '<span class="highlight">$1</span>');
+      const q = query.trim().toLowerCase();
+      const lower = safeText.toLowerCase();
+      let result = '';
+      let cursor = 0;
+      let idx = lower.indexOf(q, cursor);
+      if (idx === -1) return safeText;
+      while (idx !== -1) {
+        result += safeText.slice(cursor, idx) + '<span class="highlight">' + safeText.slice(idx, idx + q.length) + '</span>';
+        cursor = idx + q.length;
+        idx = lower.indexOf(q, cursor);
+      }
+      result += safeText.slice(cursor);
+      return result;
     }
 
     // Render Filter Chips
@@ -504,20 +514,19 @@ __INITIAL_TABLE_ROWS__
         return '<button type="button" class="chip ' + activeClass + '" data-tech="' + t + '">' +
                t + ' (' + count + ')</button>';
       }).join('');
-
-      // Add click handlers: Clicking category shows ONLY rows of that category!
-      filterChipsContainer.querySelectorAll('.chip').forEach(btn => {
-        btn.addEventListener('click', () => {
-          selectedTech = btn.getAttribute('data-tech');
-          // Clear any search text so category filter cleanly shows only those rows
-          searchQuery = '';
-          searchInput.value = '';
-          clearSearchBtn.style.display = 'none';
-          renderChips();
-          renderTable();
-        });
-      });
     }
+
+    // Event delegation: Clicking any category chip shows ONLY rows of that category!
+    filterChipsContainer.addEventListener('click', (e) => {
+      const btn = e.target.closest('.chip');
+      if (!btn) return;
+      selectedTech = btn.getAttribute('data-tech');
+      searchQuery = '';
+      searchInput.value = '';
+      clearSearchBtn.style.display = 'none';
+      renderChips();
+      renderTable();
+    });
 
     // Render Projects Table
     function renderTable() {
@@ -600,14 +609,16 @@ __INITIAL_TABLE_ROWS__
       // Reset temporary flash flag after rendering
       filtered.forEach(p => { if (p._isNew) delete p._isNew; });
 
-      // Attach delete listeners
-      projectsTbody.querySelectorAll('.btn-danger').forEach(btn => {
-        btn.addEventListener('click', () => {
-          const id = btn.getAttribute('data-id');
-          deleteProject(id);
-        });
-      });
     }
+
+    // Event delegation: Delete project row
+    projectsTbody.addEventListener('click', (e) => {
+      const btn = e.target.closest('.btn-danger');
+      if (btn) {
+        const id = btn.getAttribute('data-id');
+        if (id) deleteProject(id);
+      }
+    });
 
     // Reset all filters
     function resetFilters() {
@@ -687,7 +698,12 @@ __INITIAL_TABLE_ROWS__
       const name = nameInput.value.trim();
       const desc = descInput.value.trim();
       const tech = techInput.value;
-      if (!name) return;
+      if (!name) {
+        nameInput.focus();
+        nameInput.style.borderColor = '#ef4444';
+        setTimeout(() => { nameInput.style.borderColor = '#475569'; }, 1500);
+        return;
+      }
 
       // Clear input fields immediately so user can type next entry
       nameInput.value = '';
@@ -804,6 +820,9 @@ __INITIAL_TABLE_ROWS__
         body = page_html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
