@@ -58,13 +58,15 @@ init_db()
 # -------------------------------------------------------------
 class RequestHandler(http.server.BaseHTTPRequestHandler):
     def _send_json(self, status_code, data):
+        body = json.dumps(data).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
-        self.wfile.write(json.dumps(data).encode("utf-8"))
+        self.wfile.write(body)
 
     def do_OPTIONS(self):
         self.send_response(200)
@@ -187,6 +189,18 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(404, "Not Found")
 
     def serve_react_app(self):
+        # Query initial data from SQLite so page renders instantly without waiting for fetch
+        conn = sqlite3.connect(DB_FILE)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM projects ORDER BY id DESC")
+        initial_projects = [dict(row) for row in cursor.fetchall()]
+        cursor.execute("SELECT COUNT(*) FROM projects")
+        total_count = cursor.fetchone()[0]
+        conn.close()
+
+        initial_json = json.dumps(initial_projects)
+
         html = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -257,7 +271,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
     <div class="stats-bar">
       <div class="stat-item">
-        <div class="stat-val" id="stat-total">0</div>
+        <div class="stat-val" id="stat-total">__TOTAL_COUNT__</div>
         <div class="stat-lbl">Total Records in SQL DB</div>
       </div>
       <div class="stat-item">
@@ -374,8 +388,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
   </div>
 
   <script>
-    // State
-    let allProjects = [];
+    // State pre-populated immediately from SQLite
+    let allProjects = __INITIAL_PROJECTS__;
     let searchQuery = '';
     let selectedTech = 'All';
     const techOptions = ['All', 'Python', 'SQL', 'React', 'Fullstack'];
@@ -620,20 +634,32 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
       }
     });
 
-    // Initial load
+    // Initial instant render from pre-loaded SQLite data
+    renderChips();
+    renderTable();
+
+    // Background live refreshes
     fetchProjects();
     fetchStats();
   </script>
 </body>
 </html>
 """
+        html = html.replace("__INITIAL_PROJECTS__", initial_json).replace("__TOTAL_COUNT__", str(total_count))
+        body = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(html.encode("utf-8"))
+        self.wfile.write(body)
+
+# Multi-threaded server: handles concurrent requests in parallel so nothing hangs
+class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
 
 def run():
-    with socketserver.TCPServer(("", PORT), RequestHandler) as httpd:
+    with ThreadedTCPServer(("", PORT), RequestHandler) as httpd:
         print(f"🚀 Python server running at http://127.0.0.1:{PORT}")
         print("💡 Tech Stack: Python (Backend) + SQLite (SQL) + React (Frontend)")
         print("Press Ctrl+C to stop.")
