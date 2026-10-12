@@ -192,18 +192,15 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Python + SQL + React Web App</title>
-  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <title>Full-Stack Web App: Python + SQL + React</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
     body { background: #0f172a; color: #f8fafc; min-height: 100vh; padding: 2rem 1rem; }
     .container { max-width: 900px; margin: 0 auto; }
-    header { margin-bottom: 2rem; border-bottom: 1px solid #1e293b; padding-bottom: 1.5rem; display: flex; justify-content: space-between; align-items: center; }
+    header { margin-bottom: 2rem; border-bottom: 1px solid #1e293b; padding-bottom: 1.5rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; }
     h1 { font-size: 1.8rem; font-weight: 700; color: #38bdf8; }
     .badges { display: flex; gap: 0.5rem; }
-    .badge { padding: 0.35rem 0.75rem; border-radius: 9999px; font-size: 0.8rem; font-weight: 600; }
+    .badge { padding: 0.35rem 0.75rem; border-radius: 9999px; font-size: 0.8rem; font-weight: 600; display: inline-block; }
     .badge-py { background: #0284c7; color: white; }
     .badge-sql { background: #d97706; color: white; }
     .badge-react { background: #06b6d4; color: white; }
@@ -215,17 +212,18 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     input:focus, select:focus { outline: none; border-color: #38bdf8; }
     button { background: #38bdf8; color: #0f172a; font-weight: 600; cursor: pointer; border: none; transition: background 0.2s; }
     button:hover { background: #0ea5e9; }
-    .btn-danger { background: #ef4444; color: white; padding: 0.4rem 0.8rem; font-size: 0.85rem; }
+    .btn-danger { background: #ef4444; color: white; padding: 0.4rem 0.8rem; font-size: 0.85rem; border-radius: 0.35rem; }
     .btn-danger:hover { background: #dc2626; }
     .table-container { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; text-align: left; }
     th, td { padding: 0.85rem; border-bottom: 1px solid #334155; }
     th { color: #94a3b8; font-weight: 600; font-size: 0.85rem; text-transform: uppercase; }
     .status-badge { display: inline-block; padding: 0.25rem 0.6rem; border-radius: 0.35rem; font-size: 0.75rem; font-weight: 600; background: #065f46; color: #6ee7b7; }
-    .sql-box { background: #090d16; padding: 1rem; border-radius: 0.5rem; font-family: monospace; color: #a5f3fc; margin-bottom: 1rem; border: 1px solid #1e293b; }
+    .sql-box { background: #090d16; padding: 1rem; border-radius: 0.5rem; font-family: monospace; color: #a5f3fc; margin-top: 1rem; border: 1px solid #1e293b; overflow-x: auto; }
     .stats-bar { display: flex; gap: 1rem; margin-bottom: 1.5rem; }
     .stat-item { flex: 1; background: #1e293b; padding: 1rem; border-radius: 0.5rem; border: 1px solid #334155; text-align: center; }
     .stat-val { font-size: 1.5rem; font-weight: 700; color: #38bdf8; }
+    .stat-lbl { font-size: 0.8rem; color: #94a3b8; margin-top: 0.25rem; }
     .search-box-wrapper { position: relative; margin-bottom: 0.75rem; }
     .search-input { width: 100%; padding-left: 2.75rem; padding-right: 2.5rem; background: #090d16; font-size: 0.95rem; }
     .search-icon { position: absolute; left: 1rem; top: 50%; transform: translateY(-50%); color: #64748b; font-size: 1rem; pointer-events: none; }
@@ -242,328 +240,389 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
   </style>
 </head>
 <body>
-  <div id="root"></div>
+  <div class="container">
+    <header>
+      <div>
+        <h1>Full-Stack Web App</h1>
+        <p style="color: #94a3b8; font-size: 0.9rem; margin-top: 0.25rem;">
+          Python Backend (HTTP REST) + SQL Database (SQLite) + Interactive UI
+        </p>
+      </div>
+      <div class="badges">
+        <span class="badge badge-py">Python 3</span>
+        <span class="badge badge-sql">SQLite SQL</span>
+        <span class="badge badge-react">Interactive UI</span>
+      </div>
+    </header>
 
-  <script type="text/babel">
-    const { useState, useEffect } = React;
+    <div class="stats-bar">
+      <div class="stat-item">
+        <div class="stat-val" id="stat-total">0</div>
+        <div class="stat-lbl">Total Records in SQL DB</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-val" style="color: #4ade80;">Online</div>
+        <div class="stat-lbl">Python Server Status</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-val" id="stat-port">:5050</div>
+        <div class="stat-lbl">Active Port</div>
+      </div>
+    </div>
 
-    function App() {
-      const [projects, setProjects] = useState([]);
-      const [stats, setStats] = useState({ total: 0 });
-      const [name, setName] = useState('');
-      const [desc, setDesc] = useState('');
-      const [tech, setTech] = useState('Python');
-      const [sqlQuery, setSqlQuery] = useState('SELECT id, name, technology, status FROM projects');
-      const [sqlResult, setSqlResult] = useState(null);
-      const [loading, setLoading] = useState(false);
-
-      // Live search & technology filter state
-      const [searchQuery, setSearchQuery] = useState('');
-      const [selectedTech, setSelectedTech] = useState('All');
-      const techOptions = ['All', 'Python', 'SQL', 'React', 'Fullstack'];
-
-      // Helper to highlight matching search characters
-      const highlightMatch = (text, query) => {
-        if (!text || !query.trim()) return text;
-        const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const regex = new RegExp(`(${escaped})`, 'gi');
-        const parts = text.split(regex);
-        return parts.map((part, i) =>
-          part.toLowerCase() === query.toLowerCase() ? (
-            <span key={i} className="highlight">{part}</span>
-          ) : part
-        );
-      };
-
-      // Real-time filtered projects list
-      const filteredProjects = projects.filter((p) => {
-        const query = searchQuery.trim().toLowerCase();
-        const matchesQuery = !query ||
-          p.name.toLowerCase().includes(query) ||
-          (p.description && p.description.toLowerCase().includes(query));
-        const matchesTech = selectedTech === 'All' || p.technology === selectedTech;
-        return matchesQuery && matchesTech;
-      });
-
-      const fetchProjects = async () => {
-        try {
-          const res = await fetch('/api/projects');
-          const data = await res.json();
-          setProjects(data);
-        } catch (err) {
-          console.error('Error fetching projects:', err);
-        }
-      };
-
-      const fetchStats = async () => {
-        try {
-          const res = await fetch('/api/stats');
-          const data = await res.json();
-          setStats(data);
-        } catch (err) {
-          console.error('Error fetching stats:', err);
-        }
-      };
-
-      useEffect(() => {
-        fetchProjects();
-        fetchStats();
-      }, []);
-
-      const handleSubmit = async (e) => {
-        e.preventDefault();
-        if (!name.trim()) return;
-        setLoading(true);
-        try {
-          await fetch('/api/projects', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, description: desc, technology: tech })
-          });
-          setName('');
-          setDesc('');
-          fetchProjects();
-          fetchStats();
-        } catch (err) {
-          console.error('Error saving project:', err);
-        } finally {
-          setLoading(false);
-        }
-      };
-
-      const handleDelete = async (id) => {
-        try {
-          await fetch(`/api/projects/${id}`, { method: 'DELETE' });
-          fetchProjects();
-          fetchStats();
-        } catch (err) {
-          console.error('Error deleting project:', err);
-        }
-      };
-
-      const runSql = async () => {
-        try {
-          const res = await fetch('/api/raw-sql', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query: sqlQuery })
-          });
-          const data = await res.json();
-          setSqlResult(data);
-        } catch (err) {
-          setSqlResult({ error: err.message });
-        }
-      };
-
-      return (
-        <div className="container">
-          <header>
-            <div>
-              <h1>Full-Stack Web App</h1>
-              <p style={{ color: '#94a3b8', fontSize: '0.9rem', marginTop: '0.25rem' }}>
-                Python Backend (HTTP REST) + SQL Database (SQLite) + React UI
-              </p>
-            </div>
-            <div className="badges">
-              <span className="badge badge-py">Python 3</span>
-              <span className="badge badge-sql">SQLite SQL</span>
-              <span className="badge badge-react">React 18</span>
-            </div>
-          </header>
-
-          <div className="stats-bar">
-            <div className="stat-item">
-              <div className="stat-val">{stats.total || 0}</div>
-              <div className="stat-lbl">Total Records in SQL DB</div>
-            </div>
-            <div className="stat-item">
-              <div className="stat-val">Online</div>
-              <div className="stat-lbl">Python Server Status</div>
-            </div>
-            <div className="stat-item">
-              <div className="stat-val">:{window.location.port || '5050'}</div>
-              <div className="stat-lbl">Active Port</div>
-            </div>
-          </div>
-
-          <div className="card">
-            <h2>Add New Project (SQL INSERT)</h2>
-            <form onSubmit={handleSubmit}>
-              <div className="form-group">
-                <input
-                  type="text"
-                  placeholder="Project Name (e.g. Authentication Module)"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  required
-                />
-                <input
-                  type="text"
-                  placeholder="Description"
-                  value={desc}
-                  onChange={(e) => setDesc(e.target.value)}
-                />
-                <select value={tech} onChange={(e) => setTech(e.target.value)}>
-                  <option value="Python">Python</option>
-                  <option value="SQL">SQL</option>
-                  <option value="React">React</option>
-                  <option value="Fullstack">Fullstack</option>
-                </select>
-                <button type="submit" disabled={loading}>
-                  {loading ? 'Inserting...' : '+ Insert into SQL'}
-                </button>
-              </div>
-            </form>
-          </div>
-
-          <div className="card">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
-              <h2>Live Database Records (SQL SELECT)</h2>
-              <span style={{ fontSize: '0.85rem', color: '#94a3b8' }}>
-                {filteredProjects.length === projects.length
-                  ? `Showing all ${projects.length} records`
-                  : `Showing ${filteredProjects.length} of ${projects.length} records`}
-              </span>
-            </div>
-
-            {/* Live Search Input */}
-            <div className="search-box-wrapper">
-              <span className="search-icon">🔍</span>
-              <input
-                type="text"
-                className="search-input"
-                placeholder="Live search by project name or description in real-time..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-              />
-              {searchQuery && (
-                <button
-                  type="button"
-                  className="clear-btn"
-                  title="Clear search"
-                  onClick={() => setSearchQuery('')}
-                >
-                  ✕
-                </button>
-              )}
-            </div>
-
-            {/* Technology Filter Chips */}
-            <div className="filter-chips">
-              {techOptions.map((t) => {
-                const count = t === 'All'
-                  ? projects.length
-                  : projects.filter((p) => p.technology === t).length;
-                return (
-                  <button
-                    key={t}
-                    type="button"
-                    className={`chip ${selectedTech === t ? 'active' : ''}`}
-                    onClick={() => setSelectedTech(t)}
-                  >
-                    {t} ({count})
-                  </button>
-                );
-              })}
-            </div>
-
-            {(searchQuery || selectedTech !== 'All') && (
-              <div className="search-meta">
-                <span>
-                  Filtering by: {searchQuery && <span>query "<strong>{searchQuery}</strong>" </span>}
-                  {selectedTech !== 'All' && <span>technology "<strong>{selectedTech}</strong>"</span>}
-                </span>
-                <button
-                  type="button"
-                  className="btn-link"
-                  onClick={() => { setSearchQuery(''); setSelectedTech('All'); }}
-                >
-                  Reset All Filters
-                </button>
-              </div>
-            )}
-
-            <div className="table-container">
-              <table>
-                <thead>
-                  <tr>
-                    <th>ID</th>
-                    <th>Name</th>
-                    <th>Description</th>
-                    <th>Tech</th>
-                    <th>Status</th>
-                    <th>Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredProjects.map((p) => (
-                    <tr key={p.id}>
-                      <td>#{p.id}</td>
-                      <td style={{ fontWeight: 600 }}>{highlightMatch(p.name, searchQuery)}</td>
-                      <td style={{ color: '#94a3b8' }}>{highlightMatch(p.description, searchQuery)}</td>
-                      <td><span className="badge badge-py">{p.technology}</span></td>
-                      <td><span className="status-badge">{p.status}</span></td>
-                      <td>
-                        <button className="btn-danger" onClick={() => handleDelete(p.id)}>
-                          Delete
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                  {filteredProjects.length === 0 && projects.length > 0 && (
-                    <tr>
-                      <td colSpan="6" style={{ textAlign: 'center', color: '#94a3b8', padding: '2rem' }}>
-                        🔍 No projects match your search for "{searchQuery}".
-                        <br />
-                        <button
-                          type="button"
-                          className="btn-link"
-                          style={{ marginTop: '0.75rem', display: 'inline-block' }}
-                          onClick={() => { setSearchQuery(''); setSelectedTech('All'); }}
-                        >
-                          Clear search filters
-                        </button>
-                      </td>
-                    </tr>
-                  )}
-                  {projects.length === 0 && (
-                    <tr>
-                      <td colSpan="6" style={{ textAlign: 'center', color: '#64748b', padding: '2rem' }}>
-                        No records found in database.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <div className="card">
-            <h2>Interactive SQL Explorer</h2>
-            <p style={{ color: '#94a3b8', fontSize: '0.85rem', marginBottom: '0.75rem' }}>
-              Execute custom SQL SELECT queries directly against the Python SQLite database:
-            </p>
-            <div style={{ display: 'flex', gap: '0.75rem' }}>
-              <input
-                type="text"
-                value={sqlQuery}
-                onChange={(e) => setSqlQuery(e.target.value)}
-                style={{ fontFamily: 'monospace' }}
-              />
-              <button onClick={runSql}>Execute SQL</button>
-            </div>
-            {sqlResult && (
-              <pre className="sql-box" style={{ marginTop: '1rem' }}>
-                {JSON.stringify(sqlResult, null, 2)}
-              </pre>
-            )}
-          </div>
+    <!-- Insert Form -->
+    <div class="card">
+      <h2>Add New Project (SQL INSERT)</h2>
+      <form id="project-form">
+        <div class="form-group">
+          <input
+            type="text"
+            id="proj-name"
+            placeholder="Project Name (e.g. Authentication Module)"
+            required
+          />
+          <input
+            type="text"
+            id="proj-desc"
+            placeholder="Description (e.g. Secure user login system)"
+          />
+          <select id="proj-tech">
+            <option value="Python">Python</option>
+            <option value="SQL">SQL</option>
+            <option value="React">React</option>
+            <option value="Fullstack">Fullstack</option>
+          </select>
+          <button type="submit" id="btn-submit">+ Insert into SQL</button>
         </div>
-      );
+      </form>
+    </div>
+
+    <!-- Live Database Records with Search -->
+    <div class="card">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem;">
+        <h2>Live Database Records (SQL SELECT)</h2>
+        <span id="records-counter" style="font-size: 0.85rem; color: #94a3b8;">Loading records...</span>
+      </div>
+
+      <!-- Live Search Box -->
+      <div class="search-box-wrapper">
+        <span class="search-icon">🔍</span>
+        <input
+          type="text"
+          id="search-input"
+          class="search-input"
+          placeholder="Live search by project name or description in real-time..."
+          autocomplete="off"
+        />
+        <button
+          type="button"
+          id="clear-search-btn"
+          class="clear-btn"
+          style="display: none;"
+          title="Clear search"
+        >✕</button>
+      </div>
+
+      <!-- Filter Chips -->
+      <div class="filter-chips" id="filter-chips"></div>
+
+      <!-- Search Meta Indicator -->
+      <div id="search-meta" class="search-meta" style="display: none;">
+        <span id="search-meta-text"></span>
+        <button type="button" class="btn-link" id="reset-filters-btn">Reset All Filters</button>
+      </div>
+
+      <!-- Projects Table -->
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Name</th>
+              <th>Description</th>
+              <th>Tech</th>
+              <th>Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="projects-tbody">
+            <tr>
+              <td colspan="6" style="text-align: center; color: #64748b; padding: 2rem;">Loading projects...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- SQL Explorer -->
+    <div class="card">
+      <h2>Interactive SQL Explorer</h2>
+      <p style="color: #94a3b8; font-size: 0.85rem; marginBottom: 0.75rem;">
+        Execute custom SQL SELECT queries directly against the Python SQLite database:
+      </p>
+      <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+        <input
+          type="text"
+          id="sql-input"
+          value="SELECT id, name, technology, status FROM projects"
+          style="font-family: monospace; flex: 1; min-width: 260px;"
+        />
+        <button type="button" id="btn-run-sql">Execute SQL</button>
+      </div>
+      <pre id="sql-result" class="sql-box" style="display: none;"></pre>
+    </div>
+  </div>
+
+  <script>
+    // State
+    let allProjects = [];
+    let searchQuery = '';
+    let selectedTech = 'All';
+    const techOptions = ['All', 'Python', 'SQL', 'React', 'Fullstack'];
+
+    // DOM Elements
+    const projectsTbody = document.getElementById('projects-tbody');
+    const recordsCounter = document.getElementById('records-counter');
+    const searchInput = document.getElementById('search-input');
+    const clearSearchBtn = document.getElementById('clear-search-btn');
+    const filterChipsContainer = document.getElementById('filter-chips');
+    const searchMeta = document.getElementById('search-meta');
+    const searchMetaText = document.getElementById('search-meta-text');
+    const resetFiltersBtn = document.getElementById('reset-filters-btn');
+    const statTotal = document.getElementById('stat-total');
+    const statPort = document.getElementById('stat-port');
+    const projectForm = document.getElementById('project-form');
+    const sqlInput = document.getElementById('sql-input');
+    const btnRunSql = document.getElementById('btn-run-sql');
+    const sqlResult = document.getElementById('sql-result');
+
+    // Display active port
+    if (window.location.port) {
+      statPort.textContent = ':' + window.location.port;
     }
 
-    const root = ReactDOM.createRoot(document.getElementById('root'));
-    root.render(<App />);
+    // Helper: Escape HTML to prevent XSS
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    // Helper: Highlight matching query terms
+    function highlight(text, query) {
+      const safeText = escapeHtml(text);
+      if (!query || !query.trim()) return safeText;
+      const cleanQ = query.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp('(' + cleanQ + ')', 'gi');
+      return safeText.replace(regex, '<span class="highlight">$1</span>');
+    }
+
+    // Render Filter Chips
+    function renderChips() {
+      filterChipsContainer.innerHTML = techOptions.map(t => {
+        const count = t === 'All'
+          ? allProjects.length
+          : allProjects.filter(p => p.technology === t).length;
+        const activeClass = selectedTech === t ? 'active' : '';
+        return '<button type="button" class="chip ' + activeClass + '" data-tech="' + t + '">' +
+               t + ' (' + count + ')</button>';
+      }).join('');
+
+      // Add click handlers
+      filterChipsContainer.querySelectorAll('.chip').forEach(btn => {
+        btn.addEventListener('click', () => {
+          selectedTech = btn.getAttribute('data-tech');
+          renderTable();
+          renderChips();
+        });
+      });
+    }
+
+    // Render Projects Table
+    function renderTable() {
+      const q = searchQuery.trim().toLowerCase();
+      const filtered = allProjects.filter(p => {
+        const matchSearch = !q ||
+          p.name.toLowerCase().includes(q) ||
+          (p.description && p.description.toLowerCase().includes(q));
+        const matchTech = selectedTech === 'All' || p.technology === selectedTech;
+        return matchSearch && matchTech;
+      });
+
+      // Update counter
+      if (filtered.length === allProjects.length) {
+        recordsCounter.textContent = 'Showing all ' + allProjects.length + ' records';
+      } else {
+        recordsCounter.textContent = 'Showing ' + filtered.length + ' of ' + allProjects.length + ' records';
+      }
+
+      // Update search meta info
+      if (searchQuery || selectedTech !== 'All') {
+        searchMeta.style.display = 'flex';
+        let metaHtml = 'Filtering by: ';
+        if (searchQuery) metaHtml += 'query "<strong>' + escapeHtml(searchQuery) + '</strong>" ';
+        if (selectedTech !== 'All') metaHtml += 'technology "<strong>' + escapeHtml(selectedTech) + '</strong>"';
+        searchMetaText.innerHTML = metaHtml;
+      } else {
+        searchMeta.style.display = 'none';
+      }
+
+      // Render table rows
+      if (filtered.length === 0) {
+        if (allProjects.length > 0) {
+          projectsTbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #94a3b8; padding: 2.5rem;">' +
+            '🔍 No projects match your search for "' + escapeHtml(searchQuery) + '".' +
+            '<br><button type="button" class="btn-link" id="empty-clear-btn" style="margin-top: 0.75rem;">Clear search filters</button>' +
+            '</td></tr>';
+          const emptyBtn = document.getElementById('empty-clear-btn');
+          if (emptyBtn) emptyBtn.addEventListener('click', resetFilters);
+        } else {
+          projectsTbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #64748b; padding: 2rem;">No records found in database.</td></tr>';
+        }
+        return;
+      }
+
+      projectsTbody.innerHTML = filtered.map(p => {
+        return '<tr>' +
+          '<td>#' + p.id + '</td>' +
+          '<td style="font-weight: 600;">' + highlight(p.name, searchQuery) + '</td>' +
+          '<td style="color: #94a3b8;">' + highlight(p.description, searchQuery) + '</td>' +
+          '<td><span class="badge badge-py">' + escapeHtml(p.technology) + '</span></td>' +
+          '<td><span class="status-badge">' + escapeHtml(p.status) + '</span></td>' +
+          '<td><button type="button" class="btn-danger" data-id="' + p.id + '">Delete</button></td>' +
+          '</tr>';
+      }).join('');
+
+      // Attach delete listeners
+      projectsTbody.querySelectorAll('.btn-danger').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const id = btn.getAttribute('data-id');
+          deleteProject(id);
+        });
+      });
+    }
+
+    // Reset all filters
+    function resetFilters() {
+      searchQuery = '';
+      selectedTech = 'All';
+      searchInput.value = '';
+      clearSearchBtn.style.display = 'none';
+      renderTable();
+      renderChips();
+    }
+    resetFiltersBtn.addEventListener('click', resetFilters);
+
+    // Live search input handler
+    searchInput.addEventListener('input', (e) => {
+      searchQuery = e.target.value;
+      clearSearchBtn.style.display = searchQuery ? 'block' : 'none';
+      renderTable();
+    });
+
+    clearSearchBtn.addEventListener('click', () => {
+      searchQuery = '';
+      searchInput.value = '';
+      clearSearchBtn.style.display = 'none';
+      renderTable();
+      searchInput.focus();
+    });
+
+    // Fetch API Data
+    async function fetchProjects() {
+      try {
+        const res = await fetch('/api/projects');
+        allProjects = await res.json();
+        renderTable();
+        renderChips();
+      } catch (err) {
+        console.error('Error fetching projects:', err);
+        projectsTbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#ef4444; padding:2rem;">Error connecting to Python backend.</td></tr>';
+      }
+    }
+
+    async function fetchStats() {
+      try {
+        const res = await fetch('/api/stats');
+        const data = await res.json();
+        statTotal.textContent = data.total || 0;
+      } catch (err) {
+        console.error('Error fetching stats:', err);
+      }
+    }
+
+    // Insert New Project
+    projectForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const nameInput = document.getElementById('proj-name');
+      const descInput = document.getElementById('proj-desc');
+      const techInput = document.getElementById('proj-tech');
+      const btnSubmit = document.getElementById('btn-submit');
+
+      const name = nameInput.value.trim();
+      const desc = descInput.value.trim();
+      const tech = techInput.value;
+      if (!name) return;
+
+      btnSubmit.disabled = true;
+      btnSubmit.textContent = 'Inserting...';
+
+      try {
+        await fetch('/api/projects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, description: desc, technology: tech })
+        });
+        nameInput.value = '';
+        descInput.value = '';
+        await fetchProjects();
+        await fetchStats();
+      } catch (err) {
+        alert('Error saving project: ' + err.message);
+      } finally {
+        btnSubmit.disabled = false;
+        btnSubmit.textContent = '+ Insert into SQL';
+      }
+    });
+
+    // Delete Project
+    async function deleteProject(id) {
+      try {
+        await fetch('/api/projects/' + id, { method: 'DELETE' });
+        await fetchProjects();
+        await fetchStats();
+      } catch (err) {
+        alert('Error deleting project: ' + err.message);
+      }
+    }
+
+    // Execute Raw SQL Query
+    btnRunSql.addEventListener('click', async () => {
+      const query = sqlInput.value.trim();
+      if (!query) return;
+
+      try {
+        const res = await fetch('/api/raw-sql', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query })
+        });
+        const data = await res.json();
+        sqlResult.style.display = 'block';
+        sqlResult.textContent = JSON.stringify(data, null, 2);
+      } catch (err) {
+        sqlResult.style.display = 'block';
+        sqlResult.textContent = 'Error: ' + err.message;
+      }
+    });
+
+    // Initial load
+    fetchProjects();
+    fetchStats();
   </script>
 </body>
 </html>
