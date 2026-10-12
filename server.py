@@ -12,6 +12,7 @@ import json
 import sqlite3
 import os
 import urllib.parse
+import html
 
 PORT = int(os.environ.get("PORT", 5050))
 DB_FILE = os.path.join(os.path.dirname(__file__), "database.db")
@@ -189,7 +190,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(404, "Not Found")
 
     def serve_react_app(self):
-        # Query initial data from SQLite so page renders instantly without waiting for fetch
+        # Query initial data from SQLite so page renders instantly with all records
         conn = sqlite3.connect(DB_FILE)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -200,6 +201,31 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         conn.close()
 
         initial_json = json.dumps(initial_projects)
+
+        # Pre-build table rows HTML so page is fully populated with all records on load
+        if initial_projects:
+            rows_html = "".join([
+                f'<tr>'
+                f'<td>#{p["id"]}</td>'
+                f'<td style="font-weight: 600;">{html.escape(str(p["name"]))}</td>'
+                f'<td style="color: #94a3b8;">{html.escape(str(p.get("description") or ""))}</td>'
+                f'<td><span class="badge badge-py">{html.escape(str(p["technology"]))}</span></td>'
+                f'<td><span class="status-badge">{html.escape(str(p["status"]))}</span></td>'
+                f'<td><button type="button" class="btn-danger" data-id="{p["id"]}">Delete</button></td>'
+                f'</tr>'
+                for p in initial_projects
+            ])
+        else:
+            rows_html = '<tr><td colspan="6" style="text-align: center; color: #64748b; padding: 2rem;">No records found in database.</td></tr>'
+
+        tech_opts = ['All', 'Python', 'SQL', 'React', 'Fullstack']
+        chips_html = "".join([
+            f'<button type="button" class="chip {"active" if t == "All" else ""}" data-tech="{t}">'
+            f'{t} ({len(initial_projects) if t == "All" else len([p for p in initial_projects if p.get("technology") == t])})'
+            f'</button>'
+            for t in tech_opts
+        ])
+        counter_text = f"Showing all {len(initial_projects)} records"
 
         html = """<!DOCTYPE html>
 <html lang="en">
@@ -315,7 +341,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     <div class="card">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem;">
         <h2>Live Database Records (SQL SELECT)</h2>
-        <span id="records-counter" style="font-size: 0.85rem; color: #94a3b8;">Loading records...</span>
+        <span id="records-counter" style="font-size: 0.85rem; color: #94a3b8;">__INITIAL_COUNTER__</span>
       </div>
 
       <!-- Live Search Box -->
@@ -338,7 +364,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
       </div>
 
       <!-- Filter Chips -->
-      <div class="filter-chips" id="filter-chips"></div>
+      <div class="filter-chips" id="filter-chips">__INITIAL_CHIPS__</div>
 
       <!-- Search Meta Indicator -->
       <div id="search-meta" class="search-meta" style="display: none;">
@@ -360,9 +386,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             </tr>
           </thead>
           <tbody id="projects-tbody">
-            <tr>
-              <td colspan="6" style="text-align: center; color: #64748b; padding: 2rem;">Loading projects...</td>
-            </tr>
+__INITIAL_TABLE_ROWS__
           </tbody>
         </table>
       </div>
@@ -460,9 +484,25 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     function renderTable() {
       const q = searchQuery.trim().toLowerCase();
       const filtered = allProjects.filter(p => {
-        const matchSearch = !q ||
-          p.name.toLowerCase().includes(q) ||
-          (p.description && p.description.toLowerCase().includes(q));
+        // If no search query, show all records normally
+        if (!q) {
+          return selectedTech === 'All' || p.technology === selectedTech;
+        }
+
+        // When searching, show ONLY the specified matching record(s)
+        const nameStr = (p.name || '').toLowerCase();
+        const descStr = (p.description || '').toLowerCase();
+        const techStr = (p.technology || '').toLowerCase();
+        const statusStr = (p.status || '').toLowerCase();
+        const idStr = String(p.id);
+
+        const matchSearch = nameStr.includes(q) ||
+          descStr.includes(q) ||
+          techStr.includes(q) ||
+          statusStr.includes(q) ||
+          idStr === q ||
+          ('#' + idStr) === q;
+
         const matchTech = selectedTech === 'All' || p.technology === selectedTech;
         return matchSearch && matchTech;
       });
@@ -645,7 +685,12 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 </body>
 </html>
 """
-        html = html.replace("__INITIAL_PROJECTS__", initial_json).replace("__TOTAL_COUNT__", str(total_count))
+        html = (html
+                .replace("__INITIAL_PROJECTS__", initial_json)
+                .replace("__TOTAL_COUNT__", str(total_count))
+                .replace("__INITIAL_TABLE_ROWS__", rows_html)
+                .replace("__INITIAL_CHIPS__", chips_html)
+                .replace("__INITIAL_COUNTER__", counter_text))
         body = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
