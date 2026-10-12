@@ -145,15 +145,24 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
             conn = sqlite3.connect(DB_FILE)
             cursor = conn.cursor()
+
+            # Find the lowest available sequence ID starting from 1 (reuse deleted IDs)
+            cursor.execute("SELECT id FROM projects ORDER BY id ASC")
+            existing_ids = {row[0] for row in cursor.fetchall()}
+            next_id = 1
+            while next_id in existing_ids:
+                next_id += 1
+
             cursor.execute("""
-            INSERT INTO projects (name, description, technology, status)
-            VALUES (?, ?, ?, 'In Progress')
-            """, (name, desc, tech))
+            INSERT INTO projects (id, name, description, technology, status)
+            VALUES (?, ?, ?, ?, 'In Progress')
+            """, (next_id, name, desc, tech))
+            # Keep sqlite_sequence updated
+            cursor.execute("UPDATE sqlite_sequence SET seq = (SELECT COALESCE(MAX(id), 0) FROM projects) WHERE name = 'projects'")
             conn.commit()
-            new_id = cursor.lastrowid
             conn.close()
 
-            self._send_json(201, {"id": new_id, "message": "Project created successfully"})
+            self._send_json(201, {"id": next_id, "message": "Project created successfully"})
         elif path == "/api/raw-sql":
             content_length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(content_length).decode("utf-8")
@@ -226,6 +235,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 conn = sqlite3.connect(DB_FILE)
                 cursor = conn.cursor()
                 cursor.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+                cursor.execute("UPDATE sqlite_sequence SET seq = (SELECT COALESCE(MAX(id), 0) FROM projects) WHERE name = 'projects'")
                 conn.commit()
                 conn.close()
                 self._send_json(200, {"message": f"Project {project_id} deleted"})
@@ -962,6 +972,7 @@ __INITIAL_TABLE_ROWS__
       try {
         const res = await fetch('/api/projects');
         allProjects = await res.json();
+        allProjects.sort((a, b) => Number(b.id) - Number(a.id));
         renderTable();
         renderSortMenu();
         populateEditSelect(editSelect.value);
@@ -1003,10 +1014,14 @@ __INITIAL_TABLE_ROWS__
       nameInput.value = '';
       descInput.value = '';
 
-      // Instant optimistic UI update: calculate temp id and prepend to table
-      const tempId = (allProjects.length > 0 ? Math.max(...allProjects.map(p => Number(p.id) || 0)) : 0) + 1;
+      // Instant optimistic UI update: find lowest available ID in sequence (starting from 1) to reuse deleted IDs
+      const existingIds = new Set(allProjects.map(p => Number(p.id)));
+      let nextId = 1;
+      while (existingIds.has(nextId)) {
+        nextId++;
+      }
       const newRecord = {
-        id: tempId,
+        id: nextId,
         name: name,
         description: desc,
         technology: tech,
@@ -1014,7 +1029,8 @@ __INITIAL_TABLE_ROWS__
         _isNew: true
       };
 
-      allProjects.unshift(newRecord);
+      allProjects.push(newRecord);
+      allProjects.sort((a, b) => Number(b.id) - Number(a.id));
 
       // Make sure the new row is visible in the table
       if (selectedTech !== 'All' && selectedTech !== tech) {
@@ -1041,6 +1057,7 @@ __INITIAL_TABLE_ROWS__
         const data = await res.json();
         if (data && data.id) {
           newRecord.id = data.id;
+          allProjects.sort((a, b) => Number(b.id) - Number(a.id));
           renderTable();
           populateEditSelect(data.id);
         }
@@ -1048,6 +1065,7 @@ __INITIAL_TABLE_ROWS__
       } catch (err) {
         // Rollback on failure
         allProjects = allProjects.filter(p => p !== newRecord);
+        allProjects.sort((a, b) => Number(b.id) - Number(a.id));
         renderSortMenu();
         renderTable();
         populateEditSelect();
