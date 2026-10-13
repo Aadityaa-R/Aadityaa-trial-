@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Projects Tracker (Python + SQL + React)
-- Backend: Python http.server with REST API endpoints
-- Database: SQLite (SQL) with relational tables, CRUD, and parameterized queries
-- Frontend: Modern React UI interacting with the Python backend
+Projects Tracker (Python + SQLite + Vanilla JS / React-style UI)
+- Backend: Python http.server with REST API endpoints & Role-Based Auth (Manager & User)
+- Database: SQLite with users and projects relational tables
+- Zero external dependencies: 100% Python standard library
 """
 
 import sys
@@ -14,6 +14,8 @@ import json
 import sqlite3
 import os
 import urllib.parse
+import hashlib
+import secrets
 from html import escape as html_escape
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -25,41 +27,116 @@ PORT = int(os.environ.get("PORT", 5050))
 DB_FILE = os.path.join(os.path.dirname(__file__), "database.db")
 socketserver.TCPServer.allow_reuse_address = True
 
+# In-memory session store: token -> user dict
+SESSIONS = {}
+
+def hash_password(password: str) -> str:
+    salt = "projects_tracker_salt_v1"
+    return hashlib.sha256(f"{salt}_{password}".encode("utf-8")).hexdigest()
+
 # -------------------------------------------------------------
-# SQL Database Setup (SQLite)
+# SQL Database Setup & Migration (SQLite)
 # -------------------------------------------------------------
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     
-    # Create SQL tables
+    # 1. Create Users Table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        full_name TEXT NOT NULL,
+        role TEXT CHECK(role IN ('manager', 'user')) NOT NULL DEFAULT 'user',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+
+    # 2. Seed default users if empty
+    cursor.execute("SELECT COUNT(*) FROM users;")
+    if cursor.fetchone()[0] == 0:
+        cursor.executemany("""
+        INSERT INTO users (username, password_hash, full_name, role)
+        VALUES (?, ?, ?, ?)
+        """, [
+            ("admin", hash_password("admin123"), "Alice Vance (Manager)", "manager"),
+            ("bob", hash_password("user123"), "Bob Smith", "user"),
+            ("charlie", hash_password("user123"), "Charlie Davis", "user")
+        ])
+        conn.commit()
+
+    # 3. Create Projects Table
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS projects (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
         name TEXT NOT NULL,
         description TEXT,
         technology TEXT NOT NULL,
         status TEXT DEFAULT 'In Progress',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
     """)
-    
-    # Seed sample records if empty
+
+    # Check for user_id column in projects (migration)
+    cursor.execute("PRAGMA table_info(projects);")
+    columns = [col[1] for col in cursor.fetchall()]
+    if "user_id" not in columns:
+        cursor.execute("ALTER TABLE projects ADD COLUMN user_id INTEGER REFERENCES users(id);")
+        conn.commit()
+
+    # Get user mapping
+    cursor.execute("SELECT id, username FROM users;")
+    user_map = {row[1]: row[0] for row in cursor.fetchall()}
+    bob_id = user_map.get("bob", 2)
+    charlie_id = user_map.get("charlie", 3)
+
+    # Assign unassigned projects
+    cursor.execute("SELECT id FROM projects WHERE user_id IS NULL;")
+    unassigned = [r[0] for r in cursor.fetchall()]
+    for pid in unassigned:
+        target_uid = bob_id if (pid % 2 == 1) else charlie_id
+        cursor.execute("UPDATE projects SET user_id = ? WHERE id = ?", (target_uid, pid))
+    conn.commit()
+
+    # Seed sample projects if empty
     cursor.execute("SELECT COUNT(*) FROM projects;")
     if cursor.fetchone()[0] == 0:
         cursor.executemany("""
-        INSERT INTO projects (name, description, technology, status)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO projects (user_id, name, description, technology, status)
+        VALUES (?, ?, ?, ?, ?)
         """, [
-            ("Python REST API", "Lightweight backend server handling HTTP endpoints", "Python", "Completed"),
-            ("SQL Relational Database", "SQLite database managing structured data and queries", "SQL", "Completed"),
-            ("React Frontend Interface", "Interactive UI component for managing projects", "React", "Completed"),
-            ("Fullstack Integration", "End-to-end communication between React and Python backend", "Fullstack", "Completed")
+            (bob_id, "Python REST API", "Lightweight backend server handling HTTP endpoints", "Python", "Completed"),
+            (charlie_id, "SQL Relational Database", "SQLite database managing structured data and queries", "SQL", "Completed"),
+            (bob_id, "React Frontend Interface", "Interactive UI component for managing projects", "React", "Completed"),
+            (charlie_id, "Fullstack Integration", "End-to-end communication between React and Python backend", "Fullstack", "Completed")
         ])
         conn.commit()
+
     conn.close()
 
 init_db()
+
+# -------------------------------------------------------------
+# Auth Helper
+# -------------------------------------------------------------
+def get_auth_user(headers):
+    auth_header = headers.get("Authorization", "")
+    token = None
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+    if not token:
+        cookie_header = headers.get("Cookie", "")
+        for part in cookie_header.split(";"):
+            part = part.strip()
+            if part.startswith("auth_token="):
+                token = part.split("=", 1)[1]
+                break
+    if token and token in SESSIONS:
+        return token, SESSIONS[token]
+    return None, None
 
 # -------------------------------------------------------------
 # HTTP Request Handler
@@ -72,7 +149,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.end_headers()
         self.wfile.write(body)
 
@@ -80,7 +157,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.end_headers()
 
     def do_GET(self):
@@ -89,43 +166,129 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             path = parsed.path
 
             if path == "/" or path == "/index.html":
-                self.serve_react_app()
+                self.serve_app()
+            elif path == "/api/auth/me":
+                _, user = get_auth_user(self.headers)
+                if not user:
+                    self._send_json(401, {"error": "Not authenticated"})
+                else:
+                    self._send_json(200, {"user": user})
+            elif path == "/api/users":
+                _, user = get_auth_user(self.headers)
+                if not user:
+                    self._send_json(401, {"error": "Authentication required"})
+                    return
+                conn = sqlite3.connect(DB_FILE)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute("SELECT id, username, full_name, role FROM users ORDER BY full_name ASC")
+                users_list = [dict(r) for r in cursor.fetchall()]
+                conn.close()
+                self._send_json(200, users_list)
             elif path == "/api/projects":
+                _, user = get_auth_user(self.headers)
+                if not user:
+                    self._send_json(401, {"error": "Authentication required"})
+                    return
+
                 conn = sqlite3.connect(DB_FILE)
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
 
-                # Parse query parameters for SQL search (e.g. ?q=login&tech=Python)
                 params = urllib.parse.parse_qs(parsed.query)
                 q = params.get("q", [""])[0].strip()
                 tech = params.get("tech", [""])[0].strip()
+                user_filter = params.get("user_id", [""])[0].strip()
 
-                sql = "SELECT * FROM projects WHERE 1=1"
-                args = []
-                if q:
-                    sql += " AND (name LIKE ? OR description LIKE ?)"
-                    pattern = f"%{q}%"
-                    args.extend([pattern, pattern])
-                if tech and tech != "All":
-                    sql += " AND technology = ?"
-                    args.append(tech)
-                sql += " ORDER BY id DESC"
+                if user["role"] == "manager":
+                    # Manager can view all user data, sorted by name!
+                    sql = """
+                    SELECT p.*, u.full_name as owner_name, u.role as owner_role
+                    FROM projects p
+                    LEFT JOIN users u ON p.user_id = u.id
+                    WHERE 1=1
+                    """
+                    args = []
+                    if q:
+                        sql += " AND (p.name LIKE ? OR p.description LIKE ? OR u.full_name LIKE ?)"
+                        pattern = f"%{q}%"
+                        args.extend([pattern, pattern, pattern])
+                    if tech and tech != "All":
+                        sql += " AND p.technology = ?"
+                        args.append(tech)
+                    if user_filter and user_filter != "All":
+                        sql += " AND p.user_id = ?"
+                        args.append(int(user_filter))
+                    # Managers view all user data sorted by name
+                    sql += " ORDER BY u.full_name ASC, p.id DESC"
+                    cursor.execute(sql, args)
+                else:
+                    # Regular user can only view their own data
+                    sql = """
+                    SELECT p.*, u.full_name as owner_name, u.role as owner_role
+                    FROM projects p
+                    LEFT JOIN users u ON p.user_id = u.id
+                    WHERE p.user_id = ?
+                    """
+                    args = [user["id"]]
+                    if q:
+                        sql += " AND (p.name LIKE ? OR p.description LIKE ?)"
+                        pattern = f"%{q}%"
+                        args.extend([pattern, pattern])
+                    if tech and tech != "All":
+                        sql += " AND p.technology = ?"
+                        args.append(tech)
+                    sql += " ORDER BY p.id DESC"
+                    cursor.execute(sql, args)
 
-                cursor.execute(sql, args)
                 rows = [dict(row) for row in cursor.fetchall()]
                 conn.close()
                 self._send_json(200, rows)
+
             elif path == "/api/stats":
+                _, user = get_auth_user(self.headers)
+                if not user:
+                    self._send_json(401, {"error": "Authentication required"})
+                    return
+
                 conn = sqlite3.connect(DB_FILE)
                 cursor = conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM projects")
-                total = cursor.fetchone()[0]
-                cursor.execute("SELECT status, COUNT(*) as cnt FROM projects GROUP BY status ORDER BY cnt DESC")
-                status_counts = dict(cursor.fetchall())
-                cursor.execute("SELECT technology, COUNT(*) as cnt FROM projects GROUP BY technology ORDER BY cnt DESC")
-                tech_counts = dict(cursor.fetchall())
-                conn.close()
-                self._send_json(200, {"total": total, "by_status": status_counts, "by_tech": tech_counts})
+
+                if user["role"] == "manager":
+                    cursor.execute("SELECT COUNT(*) FROM projects")
+                    total = cursor.fetchone()[0]
+                    cursor.execute("SELECT status, COUNT(*) as cnt FROM projects GROUP BY status ORDER BY cnt DESC")
+                    status_counts = dict(cursor.fetchall())
+                    cursor.execute("SELECT technology, COUNT(*) as cnt FROM projects GROUP BY technology ORDER BY cnt DESC")
+                    tech_counts = dict(cursor.fetchall())
+                    cursor.execute("""
+                    SELECT u.full_name, COUNT(p.id) as cnt
+                    FROM users u
+                    LEFT JOIN projects p ON p.user_id = u.id
+                    GROUP BY u.id
+                    ORDER BY cnt DESC
+                    """)
+                    user_counts = dict(cursor.fetchall())
+                    conn.close()
+                    self._send_json(200, {
+                        "total": total,
+                        "by_status": status_counts,
+                        "by_tech": tech_counts,
+                        "by_user": user_counts
+                    })
+                else:
+                    cursor.execute("SELECT COUNT(*) FROM projects WHERE user_id = ?", (user["id"],))
+                    total = cursor.fetchone()[0]
+                    cursor.execute("SELECT status, COUNT(*) as cnt FROM projects WHERE user_id = ? GROUP BY status ORDER BY cnt DESC", (user["id"],))
+                    status_counts = dict(cursor.fetchall())
+                    cursor.execute("SELECT technology, COUNT(*) as cnt FROM projects WHERE user_id = ? GROUP BY technology ORDER BY cnt DESC", (user["id"],))
+                    tech_counts = dict(cursor.fetchall())
+                    conn.close()
+                    self._send_json(200, {
+                        "total": total,
+                        "by_status": status_counts,
+                        "by_tech": tech_counts
+                    })
             else:
                 self.send_error(404, "Not Found")
         except Exception as e:
@@ -136,73 +299,155 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 pass
 
     def do_POST(self):
-        parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
+        try:
+            parsed = urllib.parse.urlparse(self.path)
+            path = parsed.path
 
-        if path == "/api/projects":
-            content_length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(content_length).decode("utf-8")
-            data = json.loads(body)
+            if path == "/api/auth/login":
+                content_length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(content_length).decode("utf-8")
+                data = json.loads(body)
 
-            name = data.get("name", "").strip()
-            desc = data.get("description", "").strip()
-            tech = data.get("technology", "Python").strip()
+                username = data.get("username", "").strip()
+                password = data.get("password", "").strip()
 
-            if not name:
-                self._send_json(400, {"error": "Project name is required"})
-                return
-
-            conn = sqlite3.connect(DB_FILE)
-            cursor = conn.cursor()
-
-            # Find the lowest available sequence ID starting from 1 (reuse deleted IDs)
-            cursor.execute("SELECT id FROM projects ORDER BY id ASC")
-            existing_ids = {row[0] for row in cursor.fetchall()}
-            next_id = 1
-            while next_id in existing_ids:
-                next_id += 1
-
-            cursor.execute("""
-            INSERT INTO projects (id, name, description, technology, status)
-            VALUES (?, ?, ?, ?, 'In Progress')
-            """, (next_id, name, desc, tech))
-            # Keep sqlite_sequence updated
-            cursor.execute("UPDATE sqlite_sequence SET seq = (SELECT COALESCE(MAX(id), 0) FROM projects) WHERE name = 'projects'")
-            conn.commit()
-            conn.close()
-
-            self._send_json(201, {"id": next_id, "message": "Project created successfully"})
-        elif path == "/api/raw-sql":
-            content_length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(content_length).decode("utf-8")
-            data = json.loads(body)
-            query = data.get("query", "").strip()
-
-            # Disallow harmful multi-statements
-            if not query.lower().startswith("select"):
-                self._send_json(400, {"error": "Only SELECT queries are permitted in SQL Explorer"})
-                return
-
-            try:
                 conn = sqlite3.connect(DB_FILE)
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
-                cursor.execute(query)
-                rows = [dict(row) for row in cursor.fetchall()]
+                cursor.execute("SELECT id, username, full_name, role, password_hash FROM users WHERE username = ?", (username,))
+                row = cursor.fetchone()
                 conn.close()
-                self._send_json(200, {"rows": rows, "count": len(rows)})
-            except Exception as e:
-                self._send_json(400, {"error": str(e)})
-        else:
-            self.send_error(404, "Not Found")
+
+                if row and row["password_hash"] == hash_password(password):
+                    token = secrets.token_hex(24)
+                    user_info = {
+                        "id": row["id"],
+                        "username": row["username"],
+                        "full_name": row["full_name"],
+                        "role": row["role"]
+                    }
+                    SESSIONS[token] = user_info
+                    self._send_json(200, {"token": token, "user": user_info})
+                else:
+                    self._send_json(401, {"error": "Invalid username or password"})
+                return
+
+            elif path == "/api/auth/logout":
+                token, _ = get_auth_user(self.headers)
+                if not token:
+                    content_length = int(self.headers.get("Content-Length", 0))
+                    if content_length > 0:
+                        body = self.rfile.read(content_length).decode("utf-8")
+                        try:
+                            token = json.loads(body).get("token")
+                        except Exception:
+                            pass
+                if token and token in SESSIONS:
+                    del SESSIONS[token]
+                self._send_json(200, {"success": True, "message": "Logged out successfully"})
+                return
+
+            elif path == "/api/projects":
+                _, user = get_auth_user(self.headers)
+                if not user:
+                    self._send_json(401, {"error": "Authentication required"})
+                    return
+
+                content_length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(content_length).decode("utf-8")
+                data = json.loads(body)
+
+                name = data.get("name", "").strip()
+                desc = data.get("description", "").strip()
+                tech = data.get("technology", "Python").strip()
+
+                if not name:
+                    self._send_json(400, {"error": "Project name is required"})
+                    return
+
+                # Target user assignment: managers can assign to any user; regular users are forced to themselves
+                if user["role"] == "manager":
+                    assigned_uid = int(data.get("user_id") or user["id"])
+                else:
+                    assigned_uid = user["id"]
+
+                conn = sqlite3.connect(DB_FILE)
+                cursor = conn.cursor()
+
+                # Find lowest sequential ID starting from 1 (reuse deleted IDs)
+                cursor.execute("SELECT id FROM projects ORDER BY id ASC")
+                existing_ids = {row[0] for row in cursor.fetchall()}
+                next_id = 1
+                while next_id in existing_ids:
+                    next_id += 1
+
+                cursor.execute("""
+                INSERT INTO projects (id, user_id, name, description, technology, status)
+                VALUES (?, ?, ?, ?, ?, 'In Progress')
+                """, (next_id, assigned_uid, name, desc, tech))
+                cursor.execute("UPDATE sqlite_sequence SET seq = (SELECT COALESCE(MAX(id), 0) FROM projects) WHERE name = 'projects'")
+                
+                # Fetch assignee name
+                cursor.execute("SELECT full_name, role FROM users WHERE id = ?", (assigned_uid,))
+                user_row = cursor.fetchone()
+                owner_name = user_row[0] if user_row else "Unknown"
+                owner_role = user_row[1] if user_row else "user"
+
+                conn.commit()
+                conn.close()
+
+                self._send_json(201, {
+                    "id": next_id,
+                    "user_id": assigned_uid,
+                    "owner_name": owner_name,
+                    "owner_role": owner_role,
+                    "name": name,
+                    "description": desc,
+                    "technology": tech,
+                    "status": "In Progress",
+                    "message": "Project created successfully"
+                })
+                return
+
+            else:
+                self.send_error(404, "Not Found")
+        except Exception as e:
+            print(f"Server error on POST {self.path}: {e}")
+            try:
+                self.send_error(500, f"Server Error: {e}")
+            except Exception:
+                pass
 
     def do_PUT(self):
-        parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
+        try:
+            parsed = urllib.parse.urlparse(self.path)
+            path = parsed.path
 
-        if path.startswith("/api/projects/"):
-            try:
+            if path.startswith("/api/projects/"):
+                _, user = get_auth_user(self.headers)
+                if not user:
+                    self._send_json(401, {"error": "Authentication required"})
+                    return
+
                 project_id = int(path.split("/")[-1])
+                conn = sqlite3.connect(DB_FILE)
+                cursor = conn.cursor()
+
+                # Check project existence and ownership
+                cursor.execute("SELECT user_id FROM projects WHERE id = ?", (project_id,))
+                p_row = cursor.fetchone()
+                if not p_row:
+                    conn.close()
+                    self._send_json(404, {"error": "Project not found"})
+                    return
+
+                current_owner_id = p_row[0]
+                # Regular user cannot edit another user's project
+                if user["role"] == "user" and current_owner_id != user["id"]:
+                    conn.close()
+                    self._send_json(403, {"error": "Forbidden: You can only edit your own projects"})
+                    return
+
                 content_length = int(self.headers.get("Content-Length", 0))
                 body = self.rfile.read(content_length).decode("utf-8")
                 data = json.loads(body)
@@ -213,210 +458,91 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 status = data.get("status", "In Progress").strip()
 
                 if not name:
+                    conn.close()
                     self._send_json(400, {"error": "Project name is required"})
                     return
 
-                conn = sqlite3.connect(DB_FILE)
-                cursor = conn.cursor()
+                # If manager, can reassign user
+                if user["role"] == "manager" and "user_id" in data:
+                    new_owner_id = int(data["user_id"])
+                else:
+                    new_owner_id = current_owner_id
+
                 cursor.execute("""
                 UPDATE projects
-                SET name = ?, description = ?, technology = ?, status = ?
+                SET name = ?, description = ?, technology = ?, status = ?, user_id = ?
                 WHERE id = ?
-                """, (name, desc, tech, status, project_id))
+                """, (name, desc, tech, status, new_owner_id, project_id))
+
+                cursor.execute("SELECT full_name, role FROM users WHERE id = ?", (new_owner_id,))
+                user_row = cursor.fetchone()
+                owner_name = user_row[0] if user_row else "Unknown"
+                owner_role = user_row[1] if user_row else "user"
+
                 conn.commit()
                 conn.close()
 
-                self._send_json(200, {"id": project_id, "message": "Project updated successfully"})
-            except ValueError:
-                self._send_json(400, {"error": "Invalid project ID"})
-            except Exception as e:
-                self._send_json(500, {"error": str(e)})
-        else:
-            self.send_error(404, "Not Found")
+                self._send_json(200, {
+                    "id": project_id,
+                    "user_id": new_owner_id,
+                    "owner_name": owner_name,
+                    "owner_role": owner_role,
+                    "name": name,
+                    "description": desc,
+                    "technology": tech,
+                    "status": status,
+                    "message": "Project updated successfully"
+                })
+            else:
+                self.send_error(404, "Not Found")
+        except ValueError:
+            self._send_json(400, {"error": "Invalid project ID"})
+        except Exception as e:
+            self._send_json(500, {"error": str(e)})
 
     def do_DELETE(self):
-        parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
+        try:
+            parsed = urllib.parse.urlparse(self.path)
+            path = parsed.path
 
-        if path.startswith("/api/projects/"):
-            try:
+            if path.startswith("/api/projects/"):
+                _, user = get_auth_user(self.headers)
+                if not user:
+                    self._send_json(401, {"error": "Authentication required"})
+                    return
+
                 project_id = int(path.split("/")[-1])
                 conn = sqlite3.connect(DB_FILE)
                 cursor = conn.cursor()
+
+                # Check project existence and ownership
+                cursor.execute("SELECT user_id FROM projects WHERE id = ?", (project_id,))
+                p_row = cursor.fetchone()
+                if not p_row:
+                    conn.close()
+                    self._send_json(404, {"error": "Project not found"})
+                    return
+
+                current_owner_id = p_row[0]
+                if user["role"] == "user" and current_owner_id != user["id"]:
+                    conn.close()
+                    self._send_json(403, {"error": "Forbidden: You can only delete your own projects"})
+                    return
+
                 cursor.execute("DELETE FROM projects WHERE id = ?", (project_id,))
                 cursor.execute("UPDATE sqlite_sequence SET seq = (SELECT COALESCE(MAX(id), 0) FROM projects) WHERE name = 'projects'")
                 conn.commit()
                 conn.close()
-                self._send_json(200, {"message": f"Project {project_id} deleted"})
-            except ValueError:
-                self._send_json(400, {"error": "Invalid project ID"})
-        else:
-            self.send_error(404, "Not Found")
-
-    def _build_pie_chart_html(self, projects, group_by="technology"):
-        counts = {}
-        for p in projects:
-            val = (p.get(group_by) or "Other").strip()
-            counts[val] = counts.get(val, 0) + 1
-
-        # Slices sorted by value (count) descending
-        sorted_items = sorted(counts.items(), key=lambda x: x[1], reverse=True)
-        total = len(projects)
-
-        palette = {
-            "Python": "#8b5cf6",
-            "SQL": "#f59e0b",
-            "React": "#06b6d4",
-            "Fullstack": "#ec4899",
-            "Completed": "#10b981",
-            "In Progress": "#f59e0b",
-            "On Hold": "#ef4444",
-            "Planned": "#8b5cf6"
-        }
-        fallback_colors = ["#8b5cf6", "#f59e0b", "#06b6d4", "#ec4899", "#10b981", "#3b82f6", "#a855f7", "#14b8a6"]
-
-        if total == 0:
-            svg = '<text x="130" y="130" text-anchor="middle" dominant-baseline="central" fill="#94a3b8" font-size="14">No data in database</text>'
-            legend = '<div style="color: #64748b; font-size: 0.9rem; text-align: center; padding: 1rem;">No records found</div>'
-            return svg, legend
-
-        cx, cy, r = 130, 130, 100
-        svg_parts = []
-        legend_parts = []
-
-        if len(sorted_items) == 1:
-            label, count = sorted_items[0]
-            color = palette.get(label, fallback_colors[0])
-            svg_parts.append(
-                f'<circle cx="{cx}" cy="{cy}" r="{r}" fill="{color}" stroke="#1c1735" stroke-width="2" class="pie-slice" data-label="{html_escape(label)}" data-count="{count}" data-percent="100.0"/>'
-                f'<text x="{cx}" y="{cy}" text-anchor="middle" dominant-baseline="central" fill="#ffffff" font-size="13" font-weight="700">100%</text>'
-            )
-            legend_parts.append(
-                f'<div class="legend-item" data-group="{group_by}" data-label="{html_escape(label)}">'
-                f'  <div class="legend-left">'
-                f'    <span class="legend-rank">#1</span>'
-                f'    <span class="legend-color-dot" style="background: {color};"></span>'
-                f'    <span class="legend-label">{html_escape(label)}</span>'
-                f'  </div>'
-                f'  <div class="legend-right">'
-                f'    <span class="legend-value">{count}</span>'
-                f'    <span class="legend-percent">100.0%</span>'
-                f'  </div>'
-                f'</div>'
-            )
-        else:
-            current_angle = -math.pi / 2
-            for rank, (label, count) in enumerate(sorted_items, start=1):
-                color = palette.get(label, fallback_colors[(rank - 1) % len(fallback_colors)])
-                frac = count / total
-                angle = frac * 2 * math.pi
-                start_angle = current_angle
-                end_angle = current_angle + angle
-                current_angle = end_angle
-
-                x1 = cx + r * math.cos(start_angle)
-                y1 = cy + r * math.sin(start_angle)
-                x2 = cx + r * math.cos(end_angle)
-                y2 = cy + r * math.sin(end_angle)
-                large = 1 if angle > math.pi else 0
-                percent_str = f"{frac * 100:.1f}"
-
-                path_d = f"M {cx} {cy} L {x1:.2f} {y1:.2f} A {r} {r} 0 {large} 1 {x2:.2f} {y2:.2f} Z"
-                svg_parts.append(
-                    f'<path d="{path_d}" fill="{color}" stroke="#1c1735" stroke-width="2" class="pie-slice" data-label="{html_escape(label)}" data-count="{count}" data-percent="{percent_str}"/>'
-                )
-
-                if frac >= 0.12:
-                    mid_angle = (start_angle + end_angle) / 2
-                    lx = cx + (r * 0.65) * math.cos(mid_angle)
-                    ly = cy + (r * 0.65) * math.sin(mid_angle)
-                    svg_parts.append(
-                        f'<text x="{lx:.1f}" y="{ly:.1f}" text-anchor="middle" dominant-baseline="central" fill="#ffffff" font-size="12" font-weight="700" pointer-events="none">{frac*100:.0f}%</text>'
-                    )
-
-                legend_parts.append(
-                    f'<div class="legend-item" data-group="{group_by}" data-label="{html_escape(label)}">'
-                    f'  <div class="legend-left">'
-                    f'    <span class="legend-rank">#{rank}</span>'
-                    f'    <span class="legend-color-dot" style="background: {color};"></span>'
-                    f'    <span class="legend-label">{html_escape(label)}</span>'
-                    f'  </div>'
-                    f'  <div class="legend-right">'
-                    f'    <span class="legend-value">{count}</span>'
-                    f'    <span class="legend-percent">{percent_str}%</span>'
-                    f'  </div>'
-                    f'</div>'
-                )
-
-        return "".join(svg_parts), "".join(legend_parts)
-
-    def serve_react_app(self):
-        # Query initial data from SQLite so page renders instantly with all records
-        conn = sqlite3.connect(DB_FILE)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM projects ORDER BY id DESC")
-        initial_projects = [dict(row) for row in cursor.fetchall()]
-        cursor.execute("SELECT COUNT(*) FROM projects")
-        total_count = cursor.fetchone()[0]
-        conn.close()
-
-        initial_json = json.dumps(initial_projects)
-        initial_pie_svg, initial_pie_legend = self._build_pie_chart_html(initial_projects, group_by="technology")
-
-        # Pre-build table rows HTML so page is fully populated with all records on load
-        row_items = []
-        for p in initial_projects:
-            pid = p["id"]
-            pname = html_escape(str(p["name"]))
-            pdesc = html_escape(str(p.get("description") or ""))
-            ptech = html_escape(str(p["technology"]))
-            pstatus = html_escape(str(p["status"]))
-            badge_class = "badge-py"
-            if p["technology"] == "SQL":
-                badge_class = "badge-sql"
-            elif p["technology"] == "React":
-                badge_class = "badge-react"
-            row_items.append(
-                f'<tr>'
-                f'<td>#{pid}</td>'
-                f'<td style="font-weight: 600;">{pname}</td>'
-                f'<td style="color: #a79fc2;">{pdesc}</td>'
-                f'<td><span class="badge {badge_class}">{ptech}</span></td>'
-                f'<td><span class="status-badge">{pstatus}</span></td>'
-                f'<td><button type="button" class="btn-danger" data-id="{pid}">Delete</button></td>'
-                f'</tr>'
-            )
-        rows_html = "".join(row_items) if row_items else '<tr><td colspan="6" style="text-align: center; color: #64748b; padding: 2rem;">No records found in database.</td></tr>'
-
-        tech_opts = ['All', 'Python', 'SQL', 'React', 'Fullstack']
-        sort_items = []
-        for t in tech_opts:
-            if t == 'All':
-                count = len(initial_projects)
+                self._send_json(200, {"message": f"Project {project_id} deleted successfully"})
             else:
-                count = sum(1 for p in initial_projects if p.get('technology') == t)
-            active = "active" if t == "All" else ""
-            check = "✓ " if t == "All" else ""
-            sort_items.append(
-                f'<button type="button" class="sort-option {active}" data-tech="{t}">'
-                f'<span>{check}{t}</span>'
-                f'<span class="sort-badge">{count}</span>'
-                f'</button>'
-            )
-        sort_options_html = "".join(sort_items)
+                self.send_error(404, "Not Found")
+        except ValueError:
+            self._send_json(400, {"error": "Invalid project ID"})
+        except Exception as e:
+            self._send_json(500, {"error": str(e)})
 
-        edit_items = []
-        for p in initial_projects:
-            pid = p["id"]
-            pname = html_escape(str(p["name"]))
-            ptech = html_escape(str(p["technology"]))
-            edit_items.append(f'<option value="{pid}">#{pid} - {pname} ({ptech})</option>')
-        edit_options_html = "".join(edit_items) if edit_items else '<option value="">No projects available</option>'
-
-        counter_text = f"Showing all {len(initial_projects)} records"
-
-        page_template = """<!DOCTYPE html>
+    def serve_app(self):
+        html_content = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -425,132 +551,484 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
     body { background: #120e24; color: #f5f3ff; min-height: 100vh; padding: 2rem 1rem; }
-    .container { max-width: 900px; margin: 0 auto; }
-    header { margin-bottom: 2rem; border-bottom: 1px solid #2e264f; padding-bottom: 1.5rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; }
-    h1 { font-size: 1.8rem; font-weight: 700; color: #c084fc; }
-    .badges { display: flex; gap: 0.5rem; }
-    .badge { padding: 0.35rem 0.75rem; border-radius: 9999px; font-size: 0.8rem; font-weight: 600; display: inline-block; }
-    .badge-py { background: #7c3aed; color: white; }
-    .badge-sql { background: #d97706; color: white; }
-    .badge-react { background: #9333ea; color: white; }
-    .card { background: #1c1735; border-radius: 0.75rem; padding: 1.5rem; margin-bottom: 1.5rem; border: 1px solid #2e264f; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25); }
-    .card h2 { font-size: 1.25rem; margin-bottom: 1rem; color: #e9d5ff; }
-    .form-group { display: flex; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap; }
-    input, select, button { padding: 0.75rem 1rem; border-radius: 0.5rem; border: 1px solid #3b3263; font-size: 0.95rem; }
-    input, select { background: #0c0919; color: white; flex: 1; min-width: 200px; }
-    input:focus, select:focus { outline: none; border-color: #c084fc; box-shadow: 0 0 0 2px rgba(192, 132, 252, 0.2); }
-    button { background: #a855f7; color: white; font-weight: 600; cursor: pointer; border: none; transition: all 0.2s; }
-    button:hover { background: #9333ea; }
-    .btn-danger { background: #ef4444; color: white; padding: 0.4rem 0.8rem; font-size: 0.85rem; border-radius: 0.35rem; }
-    .btn-danger:hover { background: #dc2626; }
-    .btn-edit { background: #6b21a8; color: white; padding: 0.4rem 0.8rem; font-size: 0.85rem; border-radius: 0.35rem; margin-right: 0.35rem; border: none; font-weight: 600; cursor: pointer; transition: background 0.2s; }
-    .btn-edit:hover { background: #7e22ce; }
-    .tab-btn {
-      padding: 0.65rem 1.25rem;
-      border-radius: 0.5rem;
-      font-weight: 600;
-      font-size: 0.95rem;
-      cursor: pointer;
-      border: 1px solid #3b3263;
-      background: #120e24;
-      color: #a79fc2;
-      transition: all 0.2s;
+    .container { max-width: 960px; margin: 0 auto; }
+    
+    /* Header Styles */
+    header {
+      margin-bottom: 2rem;
+      border-bottom: 1px solid #2e264f;
+      padding-bottom: 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1rem;
     }
-    .tab-btn:hover {
-      background: #1c1735;
-      color: #f5f3ff;
-      border-color: #c084fc;
-    }
-    .tab-btn.active {
-      background: #7c3aed;
-      color: white;
-      border-color: #a855f7;
-      box-shadow: 0 0 12px rgba(168, 85, 247, 0.3);
-    }
-    .table-container { overflow-x: auto; }
-    table { width: 100%; border-collapse: collapse; text-align: left; }
-    th, td { padding: 0.85rem; border-bottom: 1px solid #282147; }
-    th { color: #a79fc2; font-weight: 600; font-size: 0.85rem; text-transform: uppercase; }
-    .status-badge { display: inline-block; padding: 0.25rem 0.6rem; border-radius: 0.35rem; font-size: 0.75rem; font-weight: 600; background: #065f46; color: #6ee7b7; }
-    .search-box-wrapper { position: relative; margin-bottom: 0.75rem; }
-    .search-input { width: 100%; padding-left: 2.75rem; padding-right: 2.5rem; background: #0c0919; font-size: 0.95rem; }
-    .search-icon { position: absolute; left: 1rem; top: 50%; transform: translateY(-50%); color: #7e749c; font-size: 1rem; pointer-events: none; }
-    .clear-btn { position: absolute; right: 0.75rem; top: 50%; transform: translateY(-50%); background: transparent; border: none; color: #a79fc2; font-size: 1.1rem; cursor: pointer; padding: 0.25rem; }
-    .clear-btn:hover { color: #f5f3ff; background: transparent; }
-    .btn-sort {
-      background: #1c1735;
-      color: #f5f3ff;
-      border: 1px solid #3b3263;
-      border-radius: 0.5rem;
-      padding: 0.75rem 1.25rem;
-      font-weight: 600;
-      cursor: pointer;
+    h1 { font-size: 1.85rem; font-weight: 700; color: #c084fc; letter-spacing: -0.02em; }
+    .header-user-status {
       display: flex;
       align-items: center;
       gap: 0.5rem;
-      white-space: nowrap;
+      font-size: 0.85rem;
+      color: #c4b5fd;
+      margin-top: 0.25rem;
+    }
+    .user-profile-bar {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .user-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: #1c1735;
+      border: 1px solid #3b3263;
+      padding: 0.4rem 0.85rem;
+      border-radius: 9999px;
+      font-size: 0.85rem;
+    }
+    .role-badge {
+      font-size: 0.7rem;
+      font-weight: 800;
+      padding: 0.15rem 0.5rem;
+      border-radius: 0.25rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .role-badge.manager {
+      background: linear-gradient(135deg, #9333ea, #7c3aed);
+      color: #ffffff;
+      box-shadow: 0 0 10px rgba(147, 51, 234, 0.4);
+    }
+    .role-badge.user {
+      background: linear-gradient(135deg, #0284c7, #0369a1);
+      color: #ffffff;
+    }
+    .btn-logout {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.35);
+      color: #fca5a5;
+      padding: 0.4rem 0.9rem;
+      border-radius: 0.5rem;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+    .btn-logout:hover {
+      background: #ef4444;
+      color: #ffffff;
+      border-color: #ef4444;
+      box-shadow: 0 0 12px rgba(239, 68, 68, 0.3);
+    }
+
+    /* Auth Screen Styles */
+    #auth-screen {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 75vh;
+      padding: 1rem;
+    }
+    .auth-card {
+      background: #1c1735;
+      border: 1px solid #3b3263;
+      border-radius: 1rem;
+      padding: 2.25rem;
+      width: 100%;
+      max-width: 480px;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+      position: relative;
+    }
+    .auth-header {
+      text-align: center;
+      margin-bottom: 1.75rem;
+    }
+    .auth-icon-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      background: rgba(168, 85, 247, 0.15);
+      border: 1px solid #7c3aed;
+      font-size: 1.75rem;
+      margin-bottom: 0.75rem;
+    }
+    .auth-header h2 {
+      font-size: 1.5rem;
+      color: #f5f3ff;
+      font-weight: 700;
+    }
+    .auth-header p {
+      font-size: 0.85rem;
+      color: #a79fc2;
+      margin-top: 0.35rem;
+    }
+    .auth-alert {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid #ef4444;
+      color: #fca5a5;
+      padding: 0.75rem 1rem;
+      border-radius: 0.5rem;
+      font-size: 0.85rem;
+      margin-bottom: 1.25rem;
+      display: none;
+    }
+    .auth-divider {
+      display: flex;
+      align-items: center;
+      text-align: center;
+      margin: 1.5rem 0 1.25rem 0;
+      color: #6d6490;
+      font-size: 0.72rem;
+      letter-spacing: 0.06em;
+      font-weight: 700;
+    }
+    .auth-divider::before, .auth-divider::after {
+      content: '';
+      flex: 1;
+      border-bottom: 1px solid #2e264f;
+    }
+    .auth-divider span {
+      padding: 0 0.75rem;
+    }
+    .demo-buttons-container {
+      display: flex;
+      flex-direction: column;
+      gap: 0.65rem;
+      margin-bottom: 1.25rem;
+    }
+    .btn-demo {
+      background: #141029;
+      border: 1px solid #3b3263;
+      border-radius: 0.65rem;
+      padding: 0.75rem 1rem;
+      text-align: left;
+      cursor: pointer;
+      transition: all 0.2s;
+      color: #f5f3ff;
+      width: 100%;
+    }
+    .btn-demo:hover {
+      background: #241c42;
+      border-color: #a855f7;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 15px rgba(168, 85, 247, 0.25);
+    }
+    .btn-demo.manager {
+      border-color: #7c3aed;
+      background: linear-gradient(135deg, rgba(124, 58, 237, 0.18) 0%, rgba(28, 23, 53, 0.8) 100%);
+    }
+    .demo-role-badge {
+      display: inline-block;
+      font-size: 0.68rem;
+      font-weight: 800;
+      padding: 0.15rem 0.5rem;
+      border-radius: 0.25rem;
+      background: #7c3aed;
+      color: #ffffff;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.25rem;
+    }
+    .demo-role-badge.user-badge {
+      background: #0284c7;
+    }
+    .demo-name {
+      font-weight: 700;
+      font-size: 0.95rem;
+      color: #f5f3ff;
+    }
+    .demo-desc {
+      font-size: 0.75rem;
+      color: #a79fc2;
+      margin-top: 0.15rem;
+    }
+    .demo-users-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.65rem;
+    }
+    .demo-credentials-footer {
+      background: #120e24;
+      border: 1px solid #2e264f;
+      border-radius: 0.5rem;
+      padding: 0.75rem;
+      font-size: 0.78rem;
+      color: #a79fc2;
+      line-height: 1.5;
+    }
+    .demo-credentials-footer code {
+      background: #1f1938;
+      color: #c084fc;
+      padding: 0.1rem 0.35rem;
+      border-radius: 0.25rem;
+      font-family: monospace;
+    }
+
+    /* Main View Option Tabs (Projects vs Projects Distribution) */
+    .main-view-switcher {
+      display: flex;
+      gap: 0.75rem;
+      margin-bottom: 1.5rem;
+      background: #1c1735;
+      padding: 0.4rem;
+      border-radius: 0.75rem;
+      border: 1px solid #2e264f;
+      box-shadow: 0 4px 18px rgba(0, 0, 0, 0.3);
+    }
+    .main-view-btn {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.65rem;
+      padding: 0.75rem 1rem;
+      background: transparent;
+      border: none;
+      border-radius: 0.5rem;
+      color: #a79fc2;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .main-view-btn:hover {
+      background: #241c42;
+      color: #f5f3ff;
+    }
+    .main-view-btn.active {
+      background: #7c3aed;
+      color: #ffffff;
+      box-shadow: 0 2px 10px rgba(124, 58, 237, 0.4);
+    }
+    .main-view-badge {
+      background: #2e264f;
+      color: #c084fc;
+      font-size: 0.78rem;
+      padding: 0.15rem 0.55rem;
+      border-radius: 9999px;
+      font-weight: 700;
       transition: all 0.2s;
     }
-    .btn-sort:hover {
-      background: #282147;
-      border-color: #c084fc;
+    .main-view-btn.active .main-view-badge {
+      background: rgba(255, 255, 255, 0.25);
+      color: #ffffff;
     }
-    .sort-dropdown-menu {
+    .view-panel {
+      animation: fadeInView 0.25s ease-out;
+    }
+    @keyframes fadeInView {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Cards & Form Elements */
+    .card {
+      background: #1c1735;
+      border: 1px solid #2e264f;
+      border-radius: 0.75rem;
+      padding: 1.5rem;
+      margin-bottom: 2rem;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+    }
+    .tab-btn {
+      padding: 0.6rem 1rem;
+      background: #141029;
+      border: 1px solid #3b3263;
+      border-radius: 0.5rem;
+      color: #a79fc2;
+      font-weight: 600;
+      font-size: 0.9rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .tab-btn:hover { background: #241c42; color: #f5f3ff; }
+    .tab-btn.active {
+      background: #7c3aed;
+      color: #ffffff;
+      border-color: #a855f7;
+      box-shadow: 0 2px 8px rgba(124, 58, 237, 0.35);
+    }
+    .form-group { margin-bottom: 1rem; }
+    label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.35rem; color: #c4b5fd; }
+    input, select, textarea {
+      width: 100%;
+      padding: 0.65rem 0.85rem;
+      background: #120e24;
+      border: 1px solid #3b3263;
+      border-radius: 0.5rem;
+      color: #f5f3ff;
+      font-size: 0.95rem;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    input:focus, select:focus, textarea:focus { border-color: #c084fc; box-shadow: 0 0 0 2px rgba(192, 132, 252, 0.2); }
+    .btn-primary {
+      background: #7c3aed;
+      color: #ffffff;
+      border: none;
+      padding: 0.65rem 1.25rem;
+      border-radius: 0.5rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+    .btn-primary:hover { background: #6d28d9; transform: translateY(-1px); }
+    .btn-danger {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.4);
+      color: #fca5a5;
+      padding: 0.35rem 0.7rem;
+      border-radius: 0.35rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-danger:hover { background: #ef4444; color: #ffffff; border-color: #ef4444; }
+
+    /* Table & Controls */
+    .table-container { overflow-x: auto; margin-top: 1rem; border-radius: 0.5rem; border: 1px solid #2e264f; }
+    table { width: 100%; border-collapse: collapse; text-align: left; }
+    th, td { padding: 0.85rem 1rem; border-bottom: 1px solid #2e264f; font-size: 0.9rem; }
+    th { background: #16122d; color: #c4b5fd; font-weight: 600; }
+    tr:hover { background: #201a3d; }
+    .badge {
+      display: inline-block;
+      padding: 0.2rem 0.6rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .badge-python { background: #581c87; color: #d8b4fe; border: 1px solid #7e22ce; }
+    .badge-sql { background: #78350f; color: #fde68a; border: 1px solid #b45309; }
+    .badge-react { background: #164e63; color: #a5f3fc; border: 1px solid #0891b2; }
+    .badge-fullstack { background: #831843; color: #fbcfe8; border: 1px solid #be185d; }
+    .badge-user-owner {
+      background: #241c42;
+      color: #e9d5ff;
+      border: 1px solid #4c3a7a;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+    .badge-user-owner.manager-owner {
+      border-color: #9333ea;
+      color: #d8b4fe;
+    }
+    .status-badge {
+      display: inline-block;
+      padding: 0.15rem 0.5rem;
+      border-radius: 0.25rem;
+      font-size: 0.75rem;
+      font-weight: 600;
+      background: #141029;
+      color: #94a3b8;
+      border: 1px solid #3b3263;
+    }
+
+    /* Controls Bar: Search, Tech Sort Dropdown & Manager User Filter */
+    .controls-bar {
+      display: flex;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .search-box-wrapper {
+      position: relative;
+      flex: 1;
+      min-width: 220px;
+    }
+    .search-input {
+      padding-left: 2.2rem;
+      padding-right: 2rem;
+    }
+    .search-icon {
       position: absolute;
-      top: calc(100% + 0.5rem);
+      left: 0.75rem;
+      top: 50%;
+      transform: translateY(-50%);
+      color: #a79fc2;
+      pointer-events: none;
+    }
+    .clear-search-btn {
+      position: absolute;
+      right: 0.65rem;
+      top: 50%;
+      transform: translateY(-50%);
+      background: transparent;
+      border: none;
+      color: #a79fc2;
+      cursor: pointer;
+      font-size: 0.9rem;
+      display: none;
+    }
+
+    /* Dropdown Menus */
+    .dropdown-container {
+      position: relative;
+    }
+    .btn-dropdown {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: #141029;
+      border: 1px solid #3b3263;
+      padding: 0.65rem 0.95rem;
+      border-radius: 0.5rem;
+      color: #f5f3ff;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-dropdown:hover {
+      background: #241c42;
+      border-color: #a855f7;
+    }
+    .dropdown-menu {
+      position: absolute;
+      top: calc(100% + 0.35rem);
       right: 0;
       background: #1c1735;
       border: 1px solid #3b3263;
       border-radius: 0.5rem;
-      min-width: 200px;
-      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.6);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+      min-width: 180px;
       z-index: 50;
-      overflow: hidden;
-      padding: 0.25rem 0;
+      display: none;
+      padding: 0.35rem;
     }
-    .sort-option {
+    .dropdown-menu.show { display: block; }
+    .dropdown-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
       width: 100%;
-      text-align: left;
-      padding: 0.65rem 1rem;
+      padding: 0.5rem 0.75rem;
       background: transparent;
       border: none;
-      border-radius: 0;
-      color: #e9d5ff;
-      font-size: 0.9rem;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
+      border-radius: 0.35rem;
+      color: #a79fc2;
+      font-size: 0.85rem;
       cursor: pointer;
-      transition: background 0.15s;
+      transition: all 0.15s;
+      text-align: left;
     }
-    .sort-option:hover {
-      background: #7e22ce;
-      color: white;
-    }
-    .sort-option.active {
-      background: rgba(168, 85, 247, 0.25);
-      color: #c084fc;
-      font-weight: 700;
-    }
-    .sort-badge {
-      background: #0c0919;
-      padding: 0.15rem 0.55rem;
-      border-radius: 9999px;
-      font-size: 0.75rem;
-      color: #c4b5fd;
-    }
-    .search-meta { display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; color: #a79fc2; margin-bottom: 0.75rem; }
-    .highlight { background: rgba(168, 85, 247, 0.35); color: #e9d5ff; font-weight: 700; border-radius: 0.2rem; padding: 0 0.2rem; }
-    .btn-link { background: transparent; color: #c084fc; border: none; padding: 0; font-size: 0.85rem; cursor: pointer; text-decoration: underline; }
-    .btn-link:hover { background: transparent; color: #e9d5ff; }
-    @keyframes rowHighlight {
-      0% { background-color: rgba(168, 85, 247, 0.4); }
-      100% { background-color: transparent; }
-    }
-    .new-row-flash {
-      animation: rowHighlight 2.5s ease-out;
-    }
-    /* Pie Chart / Analytics Card Styles */
+    .dropdown-item:hover { background: #282147; color: #f5f3ff; }
+    .dropdown-item.active { background: #7c3aed; color: #ffffff; }
+
+    /* Pie Chart / Analytics Styles */
     .chart-layout {
       display: flex;
       align-items: center;
@@ -570,442 +1048,366 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
       cursor: pointer;
       transition: all 0.2s;
     }
-    .chart-tab-btn:hover {
-      background: #1c1735;
-      color: #f5f3ff;
-      border-color: #c084fc;
-    }
+    .chart-tab-btn:hover { background: #1c1735; color: #f5f3ff; border-color: #c084fc; }
     .chart-tab-btn.active {
       background: #7c3aed;
       color: white;
       border-color: #a855f7;
       box-shadow: 0 0 8px rgba(168, 85, 247, 0.3);
     }
-    .chart-svg-container {
-      position: relative;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      min-width: 240px;
-    }
-    .chart-svg-container svg {
-      overflow: visible;
-      filter: drop-shadow(0 4px 14px rgba(0, 0, 0, 0.45));
-    }
-    .pie-slice {
-      cursor: pointer;
-      transition: transform 0.2s ease, filter 0.2s ease, opacity 0.2s ease;
-      transform-origin: 130px 130px;
-    }
-    .pie-slice:hover {
-      transform: scale(1.05);
-      filter: brightness(1.15) drop-shadow(0 0 10px rgba(192, 132, 252, 0.5));
-    }
-    .chart-tooltip {
-      position: absolute;
-      pointer-events: none;
-      background: #0c0919;
-      border: 1px solid #7c3aed;
-      color: #f5f3ff;
-      padding: 0.45rem 0.8rem;
-      border-radius: 0.4rem;
-      font-size: 0.85rem;
-      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.7);
-      white-space: nowrap;
-      z-index: 100;
-      transform: translate(-50%, -100%);
-      margin-top: -10px;
-    }
     .chart-legend-container {
-      flex: 1;
-      min-width: 260px;
-      max-width: 440px;
-    }
-    .chart-legend-list {
       display: flex;
       flex-direction: column;
       gap: 0.5rem;
+      min-width: 250px;
+      max-width: 320px;
     }
     .legend-item {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 0.6rem 0.85rem;
+      padding: 0.55rem 0.8rem;
       background: #120e24;
       border: 1px solid #2e264f;
       border-radius: 0.5rem;
       cursor: pointer;
       transition: all 0.2s;
     }
-    .legend-item:hover {
-      background: #241c42;
-      border-color: #a855f7;
-      transform: translateX(4px);
-    }
-    .legend-item.highlighted {
-      background: #2e2254;
-      border-color: #c084fc;
-      box-shadow: 0 0 10px rgba(192, 132, 252, 0.25);
-    }
-    .legend-left {
-      display: flex;
-      align-items: center;
-      gap: 0.65rem;
-    }
-    .legend-rank {
-      font-size: 0.75rem;
-      font-weight: 700;
-      color: #c084fc;
-      background: #282147;
-      padding: 0.15rem 0.45rem;
-      border-radius: 0.25rem;
-      min-width: 26px;
-      text-align: center;
-    }
-    .legend-color-dot {
-      width: 12px;
-      height: 12px;
-      border-radius: 50%;
-      flex-shrink: 0;
-    }
-    .legend-label {
-      font-weight: 600;
-      font-size: 0.9rem;
-      color: #e9d5ff;
-    }
-    .legend-right {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-    }
-    .legend-value {
-      font-weight: 700;
-      font-size: 0.95rem;
-      color: #f5f3ff;
-    }
-    .legend-percent {
-      font-size: 0.8rem;
-      color: #a79fc2;
-      background: #0c0919;
-      padding: 0.15rem 0.5rem;
-      border-radius: 0.3rem;
-      min-width: 48px;
-      text-align: right;
-    }
-    /* Main View Option Tabs (Projects Distribution vs Live Database Records) */
-    .main-view-switcher {
-      display: flex;
-      gap: 0.75rem;
-      margin-bottom: 1.5rem;
-      background: #1c1735;
-      padding: 0.4rem;
-      border-radius: 0.75rem;
-      border: 1px solid #2e264f;
-      box-shadow: 0 4px 18px rgba(0, 0, 0, 0.3);
-    }
-    .main-view-btn {
-      flex: 1;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 0.65rem;
-      padding: 0.85rem 1.25rem;
-      border-radius: 0.5rem;
-      font-size: 1rem;
-      font-weight: 700;
-      cursor: pointer;
-      border: 1px solid transparent;
-      background: transparent;
-      color: #a79fc2;
-      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    }
-    .main-view-btn:hover {
-      background: #241c42;
-      color: #f5f3ff;
-      border-color: #3b3263;
-    }
-    .main-view-btn.active {
-      background: #7c3aed;
-      color: #ffffff;
-      border-color: #a855f7;
-      box-shadow: 0 4px 16px rgba(124, 58, 237, 0.45);
-    }
-    .main-view-badge {
-      background: #0c0919;
-      color: #c4b5fd;
-      font-size: 0.75rem;
-      padding: 0.15rem 0.55rem;
-      border-radius: 9999px;
-      font-weight: 700;
-      transition: all 0.2s;
-    }
-    .main-view-btn.active .main-view-badge {
-      background: rgba(255, 255, 255, 0.25);
-      color: #ffffff;
-    }
-    .view-panel {
-      animation: fadeInView 0.25s ease-out;
-    }
-    @keyframes fadeInView {
-      from { opacity: 0; transform: translateY(6px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
+    .legend-item:hover { background: #241c42; border-color: #a855f7; transform: translateX(3px); }
+    .legend-left { display: flex; align-items: center; gap: 0.65rem; }
+    .legend-rank { font-size: 0.72rem; font-weight: 700; color: #c084fc; background: #282147; padding: 0.15rem 0.45rem; border-radius: 0.25rem; min-width: 24px; text-align: center; }
+    .legend-color-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+    .legend-label { font-weight: 600; font-size: 0.88rem; color: #e9d5ff; }
+    .legend-right { display: flex; align-items: center; gap: 0.65rem; }
+    .legend-value { font-weight: 700; font-size: 0.92rem; color: #f5f3ff; }
+    .legend-percent { font-size: 0.78rem; color: #a79fc2; background: #0c0919; padding: 0.15rem 0.45rem; border-radius: 0.3rem; min-width: 44px; text-align: right; }
+    .pie-slice { transition: opacity 0.2s, transform 0.2s; cursor: pointer; }
+    .pie-slice:hover { opacity: 0.85; filter: drop-shadow(0 0 6px rgba(192, 132, 252, 0.5)); }
   </style>
 </head>
 <body>
   <div class="container">
-    <header>
-      <div>
-        <h1>Projects Tracker</h1>
-        <p style="color: #94a3b8; font-size: 0.9rem; margin-top: 0.25rem;">
-          Python Backend (HTTP REST) + SQL Database (SQLite) + Interactive UI
-        </p>
-      </div>
-    </header>
-
-    <!-- Main View Switcher: Projects vs Projects Distribution -->
-    <div class="main-view-switcher" role="tablist">
-      <button
-        type="button"
-        id="btn-view-records"
-        class="main-view-btn active"
-        role="tab"
-        aria-selected="true"
-        aria-controls="panel-live-records"
-      >
-        <span>📋 Projects</span>
-        <span class="main-view-badge" id="tab-records-count">__TOTAL_COUNT__</span>
-      </button>
-      <button
-        type="button"
-        id="btn-view-distribution"
-        class="main-view-btn"
-        role="tab"
-        aria-selected="false"
-        aria-controls="panel-projects-distribution"
-      >
-        <span>📊 Projects Distribution</span>
-      </button>
-    </div>
-
-    <!-- View Panel 1: Projects (Live Database Records) -->
-    <div id="panel-live-records" class="view-panel" style="display: block;">
-      <!-- Project Management Card: 2 Sub-Parts (Add New / Edit Existing) -->
-      <div class="card">
-        <div style="display: flex; gap: 0.5rem; margin-bottom: 1.25rem; border-bottom: 1px solid #2e264f; padding-bottom: 0.75rem;">
-          <button type="button" id="tab-add" class="tab-btn active" style="flex: 1;">
-            ➕ Add New Project
-          </button>
-          <button type="button" id="tab-edit" class="tab-btn" style="flex: 1;">
-            ✏️ Edit Existing Project
-          </button>
+    
+    <!-- AUTHENTICATION SCREEN (LOGIN) -->
+    <div id="auth-screen">
+      <div class="auth-card">
+        <div class="auth-header">
+          <div class="auth-icon-badge">🔐</div>
+          <h2>Projects Tracker</h2>
+          <p>Role-Based Authentication (Managers & Users)</p>
         </div>
 
-        <!-- Sub-Part 1: Add New Project -->
-        <div id="panel-add">
-          <h2 style="font-size: 1.1rem; margin-bottom: 0.75rem; color: #e9d5ff;">
-            Add New Project (SQL INSERT)
-          </h2>
-          <form id="project-form" onsubmit="return false;">
-            <div class="form-group">
-              <input
-                type="text"
-                id="proj-name"
-                placeholder="Project Name (e.g. Authentication Module)"
-                required
-              />
-              <input
-                type="text"
-                id="proj-desc"
-                placeholder="Description (e.g. Secure user login system)"
-              />
-              <select id="proj-tech">
-                <option value="Python">Python</option>
-                <option value="SQL">SQL</option>
-                <option value="React">React</option>
-                <option value="Fullstack">Fullstack</option>
-              </select>
-              <button type="submit" id="btn-submit">+ Insert into SQL</button>
-            </div>
-          </form>
-        </div>
+        <div id="auth-error-msg" class="auth-alert"></div>
 
-        <!-- Sub-Part 2: Edit Existing Project -->
-        <div id="panel-edit" style="display: none;">
-          <h2 style="font-size: 1.1rem; margin-bottom: 0.75rem; color: #e9d5ff;">
-            Edit Existing Project (SQL UPDATE)
-          </h2>
-          <form id="edit-form" onsubmit="return false;">
-            <div style="margin-bottom: 0.75rem;">
-              <label style="font-size: 0.85rem; color: #a79fc2; display: block; margin-bottom: 0.35rem; font-weight: 600;">
-                Choose Project to Edit:
-              </label>
-              <select id="edit-select" style="width: 100%; margin-bottom: 0.75rem;">
-__INITIAL_EDIT_OPTIONS__
-              </select>
-            </div>
-            <div class="form-group">
-              <input
-                type="text"
-                id="edit-name"
-                placeholder="Project Name"
-                required
-              />
-              <input
-                type="text"
-                id="edit-desc"
-                placeholder="Description"
-              />
-              <select id="edit-tech">
-                <option value="Python">Python</option>
-                <option value="SQL">SQL</option>
-                <option value="React">React</option>
-                <option value="Fullstack">Fullstack</option>
-              </select>
-              <select id="edit-status">
-                <option value="In Progress">In Progress</option>
-                <option value="Completed">Completed</option>
-                <option value="On Hold">On Hold</option>
-                <option value="Planned">Planned</option>
-              </select>
-              <button type="submit" id="btn-update" style="background: #9333ea;">
-                💾 Save Changes
-              </button>
-            </div>
-          </form>
-        </div>
-      </div>
-
-      <!-- Live Database Records with Search -->
-      <div class="card">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem;">
-          <h2>Projects (SQL SELECT)</h2>
-          <span id="records-counter" style="font-size: 0.85rem; color: #94a3b8;">__INITIAL_COUNTER__</span>
-        </div>
-
-        <!-- Search & Sort Controls -->
-        <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; align-items: center;">
-          <div class="search-box-wrapper" style="flex: 1; min-width: 220px; margin-bottom: 0;">
-            <span class="search-icon">🔍</span>
-            <input
-              type="text"
-              id="search-input"
-              class="search-input"
-              placeholder="Search by project name, description, or ID..."
-              autocomplete="off"
-            />
-            <button
-              type="button"
-              id="clear-search-btn"
-              class="clear-btn"
-              style="display: none;"
-              title="Clear search"
-            >✕</button>
+        <form id="login-form">
+          <div class="form-group">
+            <label for="login-username">Username</label>
+            <input type="text" id="login-username" placeholder="Enter username (e.g. admin or bob)" required autocomplete="username">
           </div>
-          <button type="button" id="btn-search" style="padding: 0.75rem 1.25rem; white-space: nowrap;">
-            🔍 Search
+          <div class="form-group">
+            <label for="login-password">Password</label>
+            <input type="password" id="login-password" placeholder="Enter password" required autocomplete="current-password">
+          </div>
+          <button type="submit" id="btn-login-submit" class="btn-primary" style="width: 100%; justify-content: center; padding: 0.75rem; margin-top: 0.5rem;">
+            🚀 Sign In
+          </button>
+        </form>
+
+        <div class="auth-divider">
+          <span>OR QUICK 1-CLICK DEMO LOGIN</span>
+        </div>
+
+        <!-- Quick Demo Login Buttons for Instant Testing -->
+        <div class="demo-buttons-container">
+          <button type="button" class="btn-demo manager" id="btn-demo-manager">
+            <div class="demo-role-badge">👑 MANAGER</div>
+            <div class="demo-name">Alice Vance (Manager)</div>
+            <div class="demo-desc">Can view all users' data sorted by name & manage team</div>
           </button>
 
-          <!-- Single Sort Button with Dropdown Menu -->
-          <div id="sort-wrapper" style="position: relative;">
-            <button type="button" id="btn-sort" class="btn-sort" title="Filter / Sort by category">
-              <span>Sort: <strong id="sort-current-label">All</strong></span>
-              <span id="sort-arrow" style="font-size: 0.75rem; margin-left: 0.25rem;">▼</span>
+          <div class="demo-users-row">
+            <button type="button" class="btn-demo" id="btn-demo-bob">
+              <div class="demo-role-badge user-badge">👤 USER</div>
+              <div class="demo-name">Bob Smith</div>
+              <div class="demo-desc">Only views Bob's data</div>
             </button>
-            <div id="sort-dropdown-menu" class="sort-dropdown-menu" style="display: none;">
-__INITIAL_SORT_OPTIONS__
-            </div>
+            <button type="button" class="btn-demo" id="btn-demo-charlie">
+              <div class="demo-role-badge user-badge">👤 USER</div>
+              <div class="demo-name">Charlie Davis</div>
+              <div class="demo-desc">Only views Charlie's data</div>
+            </button>
           </div>
         </div>
 
-        <!-- Search Meta Indicator -->
-        <div id="search-meta" class="search-meta" style="display: none;">
-          <span id="search-meta-text"></span>
-          <div style="display: flex; gap: 0.75rem; align-items: center;">
-            <button type="button" class="btn-link" id="reset-filters-btn">Reset All Filters</button>
-            <button type="button" class="btn-link" id="shortcut-back-to-distribution" style="color: #c084fc;">📊 View Projects Distribution</button>
-          </div>
-        </div>
-
-        <!-- Projects Table -->
-        <div class="table-container">
-          <table>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Name</th>
-                <th>Description</th>
-                <th>Tech</th>
-                <th>Status</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody id="projects-tbody">
-__INITIAL_TABLE_ROWS__
-            </tbody>
-          </table>
+        <div class="demo-credentials-footer">
+          <div>💡 <strong>Preset Credentials:</strong></div>
+          <div style="margin-top: 0.25rem;">• Manager: <code>admin</code> / <code>admin123</code></div>
+          <div>• User 1: <code>bob</code> / <code>user123</code></div>
+          <div>• User 2: <code>charlie</code> / <code>user123</code></div>
         </div>
       </div>
     </div>
 
-    <!-- View Panel 2: Projects Distribution -->
-    <div id="panel-projects-distribution" class="view-panel" style="display: none;">
-      <div class="card" id="analytics-card">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.75rem; border-bottom: 1px solid #2e264f; padding-bottom: 0.75rem;">
-          <div>
-            <h2 style="font-size: 1.2rem; color: #e9d5ff; margin-bottom: 0.2rem;">
-              📊 Projects Distribution (Pie Chart)
-            </h2>
-            <p style="color: #a79fc2; font-size: 0.85rem;">
-              Distribution breakdown with slices sorted by value (highest to lowest)
-            </p>
-          </div>
-          <div style="display: flex; gap: 0.5rem; align-items: center;">
-            <span style="font-size: 0.85rem; color: #a79fc2; font-weight: 600;">Group by:</span>
-            <button type="button" id="chart-by-tech" class="chart-tab-btn active" title="Group and sort by Technology">Technology</button>
-            <button type="button" id="chart-by-status" class="chart-tab-btn" title="Group and sort by Status">Status</button>
+    <!-- MAIN APP SCREEN (WHEN LOGGED IN) -->
+    <div id="app-screen" style="display: none;">
+      <header>
+        <div>
+          <h1>Projects Tracker</h1>
+          <div class="header-user-status" id="header-user-status">
+            <!-- Dynamic role description -->
           </div>
         </div>
-
-        <div class="chart-layout">
-          <!-- SVG Pie Chart container -->
-          <div class="chart-svg-container">
-            <svg id="pie-chart-svg" viewBox="0 0 260 260" width="220" height="220">
-__INITIAL_PIE_SVG__
-            </svg>
-            <div id="chart-tooltip" class="chart-tooltip" style="display: none;"></div>
+        <div class="user-profile-bar">
+          <div class="user-pill">
+            <span id="user-avatar-icon">👤</span>
+            <span id="user-full-name-display" style="font-weight: 600;">User</span>
+            <span id="user-role-badge" class="role-badge">Role</span>
           </div>
-
-          <!-- Sorted Legend & Stats list -->
-          <div class="chart-legend-container">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.65rem;">
-              <span style="font-size: 0.8rem; text-transform: uppercase; color: #7e749c; font-weight: 700; letter-spacing: 0.05em;">
-                Sorted Values (Ranked by Count)
-              </span>
-              <span style="font-size: 0.75rem; color: #a79fc2;">Click item to filter</span>
-            </div>
-            <div id="chart-legend-list" class="chart-legend-list">
-__INITIAL_PIE_LEGEND__
-            </div>
-          </div>
+          <button type="button" id="btn-logout" class="btn-logout" title="Sign out of account">
+            🚪 Log Out
+          </button>
         </div>
+      </header>
 
-        <button type="button" class="tab-btn" id="shortcut-to-records" style="width: 100%; margin-top: 1.25rem; display: flex; align-items: center; justify-content: center; gap: 0.5rem;">
-          📋 View in Projects Table →
+      <!-- Main View Switcher: Projects vs Projects Distribution -->
+      <div class="main-view-switcher" role="tablist">
+        <button
+          type="button"
+          id="btn-view-records"
+          class="main-view-btn active"
+          role="tab"
+          aria-selected="true"
+          aria-controls="panel-live-records"
+        >
+          <span>📋 Projects</span>
+          <span class="main-view-badge" id="tab-records-count">0</span>
+        </button>
+        <button
+          type="button"
+          id="btn-view-distribution"
+          class="main-view-btn"
+          role="tab"
+          aria-selected="false"
+          aria-controls="panel-projects-distribution"
+        >
+          <span>📊 Projects Distribution</span>
         </button>
       </div>
+
+      <!-- View Panel 1: Projects (Live Database Records) -->
+      <div id="panel-live-records" class="view-panel" style="display: block;">
+        
+        <!-- Management Card: Add / Edit -->
+        <div class="card">
+          <div style="display: flex; gap: 0.5rem; margin-bottom: 1.25rem; border-bottom: 1px solid #2e264f; padding-bottom: 0.75rem;">
+            <button type="button" id="tab-add" class="tab-btn active" style="flex: 1;">
+              ➕ Add New Project
+            </button>
+            <button type="button" id="tab-edit" class="tab-btn" style="flex: 1;">
+              ✏️ Edit Existing Project
+            </button>
+          </div>
+
+          <!-- Add Project Form -->
+          <form id="project-form">
+            <!-- Assignee Selector (Shown for Managers) -->
+            <div class="form-group" id="form-group-add-user" style="display: none;">
+              <label for="proj-user-add">👤 Assign To User</label>
+              <select id="proj-user-add"></select>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+              <div class="form-group">
+                <label for="proj-name">Project Name *</label>
+                <input type="text" id="proj-name" placeholder="e.g. Authentication Service" required>
+              </div>
+              <div class="form-group">
+                <label for="proj-tech">Technology</label>
+                <select id="proj-tech">
+                  <option value="Python">Python</option>
+                  <option value="SQL">SQL</option>
+                  <option value="React">React</option>
+                  <option value="Fullstack">Fullstack</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="proj-desc">Description</label>
+              <textarea id="proj-desc" rows="2" placeholder="Brief project summary..."></textarea>
+            </div>
+            <button type="submit" id="btn-submit" class="btn-primary">
+              💾 Save to SQLite Database
+            </button>
+          </form>
+
+          <!-- Edit Project Form -->
+          <form id="edit-form" style="display: none;">
+            <div class="form-group">
+              <label for="edit-select">Select Project to Modify</label>
+              <select id="edit-select">
+                <option value="">Loading projects...</option>
+              </select>
+            </div>
+            <!-- Assignee Selector for Edit (Shown for Managers) -->
+            <div class="form-group" id="form-group-edit-user" style="display: none;">
+              <label for="edit-user">👤 Assigned User</label>
+              <select id="edit-user"></select>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+              <div class="form-group">
+                <label for="edit-name">Project Name *</label>
+                <input type="text" id="edit-name" required>
+              </div>
+              <div class="form-group">
+                <label for="edit-tech">Technology</label>
+                <select id="edit-tech">
+                  <option value="Python">Python</option>
+                  <option value="SQL">SQL</option>
+                  <option value="React">React</option>
+                  <option value="Fullstack">Fullstack</option>
+                </select>
+              </div>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+              <div class="form-group">
+                <label for="edit-status">Status</label>
+                <select id="edit-status">
+                  <option value="In Progress">In Progress</option>
+                  <option value="Completed">Completed</option>
+                  <option value="On Hold">On Hold</option>
+                  <option value="Planned">Planned</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="edit-desc">Description</label>
+                <textarea id="edit-desc" rows="2"></textarea>
+              </div>
+            </div>
+            <button type="submit" id="btn-update" class="btn-primary" style="background: #9333ea;">
+              ✏️ Update Record in SQLite
+            </button>
+          </form>
+        </div>
+
+        <!-- Projects Table Section -->
+        <div class="card">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.75rem;">
+            <h2 id="projects-table-title">Projects (SQL SELECT)</h2>
+            <span style="font-size: 0.85rem; color: #a79fc2;" id="record-counter">Showing records</span>
+          </div>
+
+          <!-- Controls: Search + Tech Sort Dropdown + Manager User Filter -->
+          <div class="controls-bar">
+            <!-- Search Input -->
+            <div class="search-box-wrapper">
+              <span class="search-icon">🔍</span>
+              <input type="text" id="search-input" class="search-input" placeholder="Search by name, description, or user...">
+              <button type="button" id="clear-search-btn" class="clear-search-btn">✕</button>
+            </div>
+
+            <!-- Technology Filter Dropdown -->
+            <div class="dropdown-container">
+              <button type="button" id="btn-sort-toggle" class="btn-dropdown">
+                <span id="sort-dropdown-label">🏷️ Tech: All</span>
+                <span style="font-size: 0.7rem;">▼</span>
+              </button>
+              <div id="sort-dropdown-menu" class="dropdown-menu">
+                <!-- Dynamically filled -->
+              </div>
+            </div>
+
+            <!-- Manager-Only User Filter Dropdown -->
+            <div class="dropdown-container" id="user-filter-wrapper" style="display: none;">
+              <button type="button" id="btn-user-filter-toggle" class="btn-dropdown" style="border-color: #7c3aed;">
+                <span id="user-filter-label">👥 User: All</span>
+                <span style="font-size: 0.7rem;">▼</span>
+              </button>
+              <div id="user-filter-dropdown-menu" class="dropdown-menu">
+                <!-- Dynamically filled -->
+              </div>
+            </div>
+          </div>
+
+          <!-- Table -->
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th style="width: 55px;">ID</th>
+                  <th>Project Name</th>
+                  <th>Description</th>
+                  <th>Technology</th>
+                  <th>Status</th>
+                  <th id="th-owner-column" style="display: none;">Assigned User</th>
+                  <th style="width: 80px;">Action</th>
+                </tr>
+              </thead>
+              <tbody id="projects-tbody">
+                <tr><td colspan="7" style="text-align: center; color: #a79fc2; padding: 2rem;">Loading projects...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- View Panel 2: Projects Distribution (Pie Chart) -->
+      <div id="panel-projects-distribution" class="view-panel" style="display: none;">
+        <div class="card">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem; flex-wrap: wrap; gap: 0.75rem;">
+            <div>
+              <h2 id="chart-card-title">Projects Distribution</h2>
+              <p style="font-size: 0.85rem; color: #a79fc2; margin-top: 0.2rem;" id="chart-card-subtitle">
+                Interactive distribution of database records sorted by count
+              </p>
+            </div>
+            <!-- Category Tabs -->
+            <div style="display: flex; gap: 0.4rem; background: #120e24; padding: 0.25rem; border-radius: 0.5rem; border: 1px solid #2e264f;">
+              <button type="button" class="chart-tab-btn active" data-chart-group="technology" id="tab-chart-tech">
+                Technology
+              </button>
+              <button type="button" class="chart-tab-btn" data-chart-group="status" id="tab-chart-status">
+                Status
+              </button>
+              <button type="button" class="chart-tab-btn" data-chart-group="user" id="tab-chart-user" style="display: none;">
+                By User
+              </button>
+            </div>
+          </div>
+
+          <div class="chart-layout">
+            <div style="position: relative; width: 260px; height: 260px; display: flex; align-items: center; justify-content: center;">
+              <svg id="pie-chart-svg" width="260" height="260" viewBox="0 0 260 260">
+                <!-- SVG Slices rendered here -->
+              </svg>
+            </div>
+            <div id="pie-chart-legend" class="chart-legend-container">
+              <!-- Legend items rendered here -->
+            </div>
+          </div>
+
+          <div style="margin-top: 1.5rem; border-top: 1px solid #2e264f; padding-top: 1rem; display: flex; justify-content: flex-end;">
+            <button type="button" id="btn-chart-goto-records" class="btn-primary" style="font-size: 0.85rem;">
+              📋 View in Projects Table →
+            </button>
+          </div>
+        </div>
+      </div>
+
     </div>
   </div>
 
   <script>
-    // State pre-populated immediately from SQLite
-    let allProjects = __INITIAL_PROJECTS__;
-    let searchQuery = '';
+    // State Variables
+    let currentUser = null;
+    let authToken = localStorage.getItem('projects_tracker_token') || null;
+    let allProjects = [];
+    let allUsers = [];
     let selectedTech = 'All';
-    let chartGroupBy = 'technology'; // 'technology' or 'status'
-    const techOptions = ['All', 'Python', 'SQL', 'React', 'Fullstack'];
+    let selectedUserFilter = 'All';
+    let searchQuery = '';
+    let currentChartGroup = 'technology';
 
-    const chartPalette = {
+    // Palette for charts and badges
+    const palette = {
       'Python': '#8b5cf6',
       'SQL': '#f59e0b',
       'React': '#06b6d4',
@@ -1013,536 +1415,475 @@ __INITIAL_PIE_LEGEND__
       'Completed': '#10b981',
       'In Progress': '#f59e0b',
       'On Hold': '#ef4444',
-      'Planned': '#8b5cf6'
+      'Planned': '#8b5cf6',
+      'Alice Vance (Manager)': '#a855f7',
+      'Bob Smith': '#3b82f6',
+      'Charlie Davis': '#10b981'
     };
-    const chartFallbackColors = ['#8b5cf6', '#f59e0b', '#06b6d4', '#ec4899', '#10b981', '#3b82f6', '#a855f7', '#14b8a6'];
+    const fallbackColors = ['#8b5cf6', '#f59e0b', '#06b6d4', '#ec4899', '#10b981', '#3b82f6', '#a855f7', '#14b8a6'];
 
     // DOM Elements
-    const btnViewDistribution = document.getElementById('btn-view-distribution');
+    const authScreen = document.getElementById('auth-screen');
+    const appScreen = document.getElementById('app-screen');
+    const loginForm = document.getElementById('login-form');
+    const loginUsername = document.getElementById('login-username');
+    const loginPassword = document.getElementById('login-password');
+    const authErrorMsg = document.getElementById('auth-error-msg');
+    const btnLogout = document.getElementById('btn-logout');
+
+    const headerUserStatus = document.getElementById('header-user-status');
+    const userAvatarIcon = document.getElementById('user-avatar-icon');
+    const userFullNameDisplay = document.getElementById('user-full-name-display');
+    const userRoleBadge = document.getElementById('user-role-badge');
+
     const btnViewRecords = document.getElementById('btn-view-records');
-    const panelProjectsDistribution = document.getElementById('panel-projects-distribution');
-    const panelLiveRecords = document.getElementById('panel-live-records');
+    const btnViewDistribution = document.getElementById('btn-view-distribution');
     const tabRecordsCount = document.getElementById('tab-records-count');
-    const shortcutToRecords = document.getElementById('shortcut-to-records');
-    const shortcutBackToDistribution = document.getElementById('shortcut-back-to-distribution');
-    const pieChartSvg = document.getElementById('pie-chart-svg');
-    const chartLegendList = document.getElementById('chart-legend-list');
-    const chartTooltip = document.getElementById('chart-tooltip');
-    const chartByTech = document.getElementById('chart-by-tech');
-    const chartByStatus = document.getElementById('chart-by-status');
-    const projectsTbody = document.getElementById('projects-tbody');
-    const recordsCounter = document.getElementById('records-counter');
-    const searchInput = document.getElementById('search-input');
-    const btnSearch = document.getElementById('btn-search');
-    const clearSearchBtn = document.getElementById('clear-search-btn');
-    const sortWrapper = document.getElementById('sort-wrapper');
-    const btnSort = document.getElementById('btn-sort');
-    const sortCurrentLabel = document.getElementById('sort-current-label');
-    const sortArrow = document.getElementById('sort-arrow');
-    const sortDropdownMenu = document.getElementById('sort-dropdown-menu');
-    const searchMeta = document.getElementById('search-meta');
-    const searchMetaText = document.getElementById('search-meta-text');
-    const resetFiltersBtn = document.getElementById('reset-filters-btn');
-    const projectForm = document.getElementById('project-form');
+    const panelLiveRecords = document.getElementById('panel-live-records');
+    const panelProjectsDistribution = document.getElementById('panel-projects-distribution');
+
     const tabAdd = document.getElementById('tab-add');
     const tabEdit = document.getElementById('tab-edit');
-    const panelAdd = document.getElementById('panel-add');
-    const panelEdit = document.getElementById('panel-edit');
+    const projectForm = document.getElementById('project-form');
     const editForm = document.getElementById('edit-form');
     const editSelect = document.getElementById('edit-select');
     const editName = document.getElementById('edit-name');
     const editDesc = document.getElementById('edit-desc');
     const editTech = document.getElementById('edit-tech');
     const editStatus = document.getElementById('edit-status');
-    const btnUpdate = document.getElementById('btn-update');
+    const formGroupAddUser = document.getElementById('form-group-add-user');
+    const formGroupEditUser = document.getElementById('form-group-edit-user');
+    const projUserAdd = document.getElementById('proj-user-add');
+    const editUser = document.getElementById('edit-user');
 
-    // Helper: Escape HTML to prevent XSS
+    const projectsTableTitle = document.getElementById('projects-table-title');
+    const thOwnerColumn = document.getElementById('th-owner-column');
+    const recordCounter = document.getElementById('record-counter');
+    const searchInput = document.getElementById('search-input');
+    const clearSearchBtn = document.getElementById('clear-search-btn');
+    const btnSortToggle = document.getElementById('btn-sort-toggle');
+    const sortDropdownMenu = document.getElementById('sort-dropdown-menu');
+    const sortDropdownLabel = document.getElementById('sort-dropdown-label');
+    const userFilterWrapper = document.getElementById('user-filter-wrapper');
+    const btnUserFilterToggle = document.getElementById('btn-user-filter-toggle');
+    const userFilterDropdownMenu = document.getElementById('user-filter-dropdown-menu');
+    const userFilterLabel = document.getElementById('user-filter-label');
+    const projectsTbody = document.getElementById('projects-tbody');
+
+    const tabChartTech = document.getElementById('tab-chart-tech');
+    const tabChartStatus = document.getElementById('tab-chart-status');
+    const tabChartUser = document.getElementById('tab-chart-user');
+    const pieChartSvg = document.getElementById('pie-chart-svg');
+    const pieChartLegend = document.getElementById('pie-chart-legend');
+
+    // -------------------------------------------------------------
+    // Authentication Functions
+    // -------------------------------------------------------------
+    async function login(username, password) {
+      authErrorMsg.style.display = 'none';
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Login failed');
+        }
+        authToken = data.token;
+        currentUser = data.user;
+        localStorage.setItem('projects_tracker_token', authToken);
+        showApp();
+      } catch (err) {
+        authErrorMsg.textContent = '⚠️ ' + err.message;
+        authErrorMsg.style.display = 'block';
+      }
+    }
+
+    async function logout() {
+      try {
+        if (authToken) {
+          await fetch('/api/auth/logout', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer ' + authToken
+            }
+          });
+        }
+      } catch (e) {
+        console.error('Logout error:', e);
+      } finally {
+        authToken = null;
+        currentUser = null;
+        localStorage.removeItem('projects_tracker_token');
+        showAuth();
+      }
+    }
+
+    async function checkExistingAuth() {
+      if (!authToken) {
+        showAuth();
+        return;
+      }
+      try {
+        const res = await fetch('/api/auth/me', {
+          headers: { 'Authorization': 'Bearer ' + authToken }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          currentUser = data.user;
+          showApp();
+        } else {
+          authToken = null;
+          localStorage.removeItem('projects_tracker_token');
+          showAuth();
+        }
+      } catch (err) {
+        showAuth();
+      }
+    }
+
+    function showAuth() {
+      authScreen.style.display = 'flex';
+      appScreen.style.display = 'none';
+      loginUsername.value = '';
+      loginPassword.value = '';
+      authErrorMsg.style.display = 'none';
+    }
+
+    function showApp() {
+      authScreen.style.display = 'none';
+      appScreen.style.display = 'block';
+
+      // Update Header with User Info & Role
+      userFullNameDisplay.textContent = currentUser.full_name;
+      if (currentUser.role === 'manager') {
+        userAvatarIcon.textContent = '👑';
+        userRoleBadge.textContent = 'Manager';
+        userRoleBadge.className = 'role-badge manager';
+        headerUserStatus.innerHTML = `<span>👑</span> <span>Logged in as <strong>${currentUser.full_name}</strong> (Manager) • Viewing all user records sorted by name</span>`;
+        projectsTableTitle.textContent = 'Projects (All Users — Sorted by Name)';
+        thOwnerColumn.style.display = 'table-cell';
+        userFilterWrapper.style.display = 'block';
+        tabChartUser.style.display = 'inline-block';
+        formGroupAddUser.style.display = 'block';
+        formGroupEditUser.style.display = 'block';
+      } else {
+        userAvatarIcon.textContent = '👤';
+        userRoleBadge.textContent = 'User';
+        userRoleBadge.className = 'role-badge user';
+        headerUserStatus.innerHTML = `<span>👤</span> <span>Logged in as <strong>${currentUser.full_name}</strong> (User) • Personal Workspace</span>`;
+        projectsTableTitle.textContent = 'My Projects (SQL SELECT)';
+        thOwnerColumn.style.display = 'none';
+        userFilterWrapper.style.display = 'none';
+        tabChartUser.style.display = 'none';
+        formGroupAddUser.style.display = 'none';
+        formGroupEditUser.style.display = 'none';
+      }
+
+      // Reset filters & views
+      selectedTech = 'All';
+      selectedUserFilter = 'All';
+      searchQuery = '';
+      searchInput.value = '';
+      clearSearchBtn.style.display = 'none';
+      switchMainView('records');
+
+      // Fetch users and projects
+      fetchUsers();
+      fetchProjects();
+    }
+
+    // Demo Logins
+    document.getElementById('btn-demo-manager').addEventListener('click', () => login('admin', 'admin123'));
+    document.getElementById('btn-demo-bob').addEventListener('click', () => login('bob', 'user123'));
+    document.getElementById('btn-demo-charlie').addEventListener('click', () => login('charlie', 'user123'));
+
+    loginForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      login(loginUsername.value.trim(), loginPassword.value);
+    });
+
+    btnLogout.addEventListener('click', logout);
+
+    // -------------------------------------------------------------
+    // Data Fetching & Sync
+    // -------------------------------------------------------------
+    async function fetchUsers() {
+      if (!authToken) return;
+      try {
+        const res = await fetch('/api/users', {
+          headers: { 'Authorization': 'Bearer ' + authToken }
+        });
+        if (res.ok) {
+          allUsers = await res.json();
+          populateUserSelectors();
+          renderUserFilterMenu();
+        }
+      } catch (err) {
+        console.error('Error fetching users:', err);
+      }
+    }
+
+    function populateUserSelectors() {
+      // Add form selector
+      projUserAdd.innerHTML = allUsers.map(u => 
+        `<option value="${u.id}" ${u.id === currentUser.id ? 'selected' : ''}>${u.full_name} (${u.role})</option>`
+      ).join('');
+
+      // Edit form selector
+      editUser.innerHTML = allUsers.map(u => 
+        `<option value="${u.id}">${u.full_name} (${u.role})</option>`
+      ).join('');
+    }
+
+    async function fetchProjects() {
+      if (!authToken) return;
+      try {
+        let url = `/api/projects?q=${encodeURIComponent(searchQuery)}&tech=${encodeURIComponent(selectedTech)}`;
+        if (currentUser.role === 'manager' && selectedUserFilter !== 'All') {
+          url += `&user_id=${encodeURIComponent(selectedUserFilter)}`;
+        }
+        const res = await fetch(url, {
+          headers: { 'Authorization': 'Bearer ' + authToken }
+        });
+        if (res.status === 401) {
+          logout();
+          return;
+        }
+        allProjects = await res.json();
+        
+        // If manager, data is already sorted by user full name ASC from SQL; otherwise ID DESC
+        renderTable();
+        renderSortMenu();
+        renderUserFilterMenu();
+        renderPieChart();
+        populateEditSelect();
+        if (tabRecordsCount) tabRecordsCount.textContent = allProjects.length;
+      } catch (err) {
+        console.error('Error fetching projects:', err);
+        projectsTbody.innerHTML = '<tr><td colspan="7" style="text-align:center; color:#ef4444; padding:2rem;">Error connecting to server.</td></tr>';
+      }
+    }
+
+    // -------------------------------------------------------------
+    // Main View Navigation (Projects vs Distribution)
+    // -------------------------------------------------------------
+    function switchMainView(viewName) {
+      if (viewName === 'records') {
+        panelLiveRecords.style.display = 'block';
+        panelProjectsDistribution.style.display = 'none';
+        btnViewRecords.classList.add('active');
+        btnViewRecords.setAttribute('aria-selected', 'true');
+        btnViewDistribution.classList.remove('active');
+        btnViewDistribution.setAttribute('aria-selected', 'false');
+      } else if (viewName === 'distribution') {
+        panelLiveRecords.style.display = 'none';
+        panelProjectsDistribution.style.display = 'block';
+        btnViewDistribution.classList.add('active');
+        btnViewDistribution.setAttribute('aria-selected', 'true');
+        btnViewRecords.classList.remove('active');
+        btnViewRecords.setAttribute('aria-selected', 'false');
+        renderPieChart();
+      }
+    }
+
+    btnViewRecords.addEventListener('click', () => switchMainView('records'));
+    btnViewDistribution.addEventListener('click', () => switchMainView('distribution'));
+    document.getElementById('btn-chart-goto-records').addEventListener('click', () => switchMainView('records'));
+
+    // -------------------------------------------------------------
+    // Add / Edit Project Sub-Tabs
+    // -------------------------------------------------------------
+    tabAdd.addEventListener('click', () => {
+      tabAdd.classList.add('active');
+      tabEdit.classList.remove('active');
+      projectForm.style.display = 'block';
+      editForm.style.display = 'none';
+    });
+
+    tabEdit.addEventListener('click', () => {
+      tabEdit.classList.add('active');
+      tabAdd.classList.remove('active');
+      editForm.style.display = 'block';
+      projectForm.style.display = 'none';
+      populateEditSelect(editSelect.value);
+    });
+
+    // -------------------------------------------------------------
+    // Table Rendering
+    // -------------------------------------------------------------
     function escapeHtml(str) {
       if (!str) return '';
       return String(str)
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
+        .replace(/"/g, '&quot;');
     }
 
-    // Helper: Highlight matching query terms (safe substring matching without regex)
-    function highlight(text, query) {
-      const safeText = escapeHtml(text);
-      if (!query || !query.trim()) return safeText;
-      const q = query.trim().toLowerCase();
-      const lower = safeText.toLowerCase();
-      let result = '';
-      let cursor = 0;
-      let idx = lower.indexOf(q, cursor);
-      if (idx === -1) return safeText;
-      while (idx !== -1) {
-        result += safeText.slice(cursor, idx) + '<span class="highlight">' + safeText.slice(idx, idx + q.length) + '</span>';
-        cursor = idx + q.length;
-        idx = lower.indexOf(q, cursor);
-      }
-      result += safeText.slice(cursor);
-      return result;
-    }
-
-    // Render Interactive Pie Chart with Values Sorted in Descending Order
-    function renderPieChart() {
-      if (!pieChartSvg || !chartLegendList) return;
-
-      const total = allProjects.length;
-      if (total === 0) {
-        pieChartSvg.innerHTML = '<text x="130" y="130" text-anchor="middle" dominant-baseline="central" fill="#94a3b8" font-size="14">No data in database</text>';
-        chartLegendList.innerHTML = '<div style="color: #64748b; font-size: 0.9rem; text-align: center; padding: 1rem;">No records found</div>';
-        return;
-      }
-
-      // Aggregate counts by group
-      const counts = {};
-      allProjects.forEach(p => {
-        const val = ((chartGroupBy === 'technology' ? p.technology : p.status) || 'Other').trim();
-        counts[val] = (counts[val] || 0) + 1;
-      });
-
-      // Slices sorted strictly by values (count) in descending order
-      const sortedItems = Object.keys(counts).map(label => ({
-        label: label,
-        count: counts[label],
-        percent: ((counts[label] / total) * 100).toFixed(1)
-      })).sort((a, b) => b.count - a.count);
-
-      const cx = 130, cy = 130, r = 100;
-      let svgHtml = '';
-      let legendHtml = '';
-
-      if (sortedItems.length === 1) {
-        const item = sortedItems[0];
-        const color = chartPalette[item.label] || chartFallbackColors[0];
-        svgHtml = '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="' + color + '" stroke="#1c1735" stroke-width="2" class="pie-slice" data-label="' + escapeHtml(item.label) + '" data-count="' + item.count + '" data-percent="100.0"></circle>' +
-                  '<text x="' + cx + '" y="' + cy + '" text-anchor="middle" dominant-baseline="central" fill="#ffffff" font-size="13" font-weight="700" pointer-events="none">100%</text>';
-        legendHtml = '<div class="legend-item" data-group="' + chartGroupBy + '" data-label="' + escapeHtml(item.label) + '">' +
-                     '  <div class="legend-left">' +
-                     '    <span class="legend-rank">#1</span>' +
-                     '    <span class="legend-color-dot" style="background: ' + color + ';"></span>' +
-                     '    <span class="legend-label">' + escapeHtml(item.label) + '</span>' +
-                     '  </div>' +
-                     '  <div class="legend-right">' +
-                     '    <span class="legend-value">' + item.count + '</span>' +
-                     '    <span class="legend-percent">100.0%</span>' +
-                     '  </div>' +
-                     '</div>';
-      } else {
-        let currentAngle = -Math.PI / 2;
-        sortedItems.forEach((item, index) => {
-          const color = chartPalette[item.label] || chartFallbackColors[index % chartFallbackColors.length];
-          const frac = item.count / total;
-          const angle = frac * 2 * Math.PI;
-          const startAngle = currentAngle;
-          const endAngle = currentAngle + angle;
-          currentAngle = endAngle;
-
-          const x1 = cx + r * Math.cos(startAngle);
-          const y1 = cy + r * Math.sin(startAngle);
-          const x2 = cx + r * Math.cos(endAngle);
-          const y2 = cy + r * Math.sin(endAngle);
-          const large = angle > Math.PI ? 1 : 0;
-
-          const pathD = 'M ' + cx + ' ' + cy + ' L ' + x1.toFixed(2) + ' ' + y1.toFixed(2) + ' A ' + r + ' ' + r + ' 0 ' + large + ' 1 ' + x2.toFixed(2) + ' ' + y2.toFixed(2) + ' Z';
-
-          svgHtml += '<path d="' + pathD + '" fill="' + color + '" stroke="#1c1735" stroke-width="2" class="pie-slice" data-label="' + escapeHtml(item.label) + '" data-count="' + item.count + '" data-percent="' + item.percent + '"></path>';
-
-          if (frac >= 0.12) {
-            const midAngle = (startAngle + endAngle) / 2;
-            const lx = cx + (r * 0.65) * Math.cos(midAngle);
-            const ly = cy + (r * 0.65) * Math.sin(midAngle);
-            svgHtml += '<text x="' + lx.toFixed(1) + '" y="' + ly.toFixed(1) + '" text-anchor="middle" dominant-baseline="central" fill="#ffffff" font-size="12" font-weight="700" pointer-events="none">' + Math.round(frac * 100) + '%</text>';
-          }
-
-          legendHtml += '<div class="legend-item" data-group="' + chartGroupBy + '" data-label="' + escapeHtml(item.label) + '">' +
-                        '  <div class="legend-left">' +
-                        '    <span class="legend-rank">#' + (index + 1) + '</span>' +
-                        '    <span class="legend-color-dot" style="background: ' + color + ';"></span>' +
-                        '    <span class="legend-label">' + escapeHtml(item.label) + '</span>' +
-                        '  </div>' +
-                        '  <div class="legend-right">' +
-                        '    <span class="legend-value">' + item.count + '</span>' +
-                        '    <span class="legend-percent">' + item.percent + '%</span>' +
-                        '  </div>' +
-                        '</div>';
-        });
-      }
-
-      pieChartSvg.innerHTML = svgHtml;
-      chartLegendList.innerHTML = legendHtml;
-      attachChartInteractions();
-    }
-
-    // Attach hover tooltip and click-to-filter handlers
-    function attachChartInteractions() {
-      const slices = pieChartSvg.querySelectorAll('.pie-slice');
-      const legendItems = chartLegendList.querySelectorAll('.legend-item');
-      const svgContainer = pieChartSvg.closest('.chart-svg-container');
-
-      slices.forEach(slice => {
-        slice.addEventListener('mousemove', (e) => {
-          const label = slice.getAttribute('data-label');
-          const count = slice.getAttribute('data-count');
-          const percent = slice.getAttribute('data-percent');
-          chartTooltip.innerHTML = '<strong>' + label + '</strong>: ' + count + ' ' + (count == 1 ? 'project' : 'projects') + ' (' + percent + '%)';
-          chartTooltip.style.display = 'block';
-          if (svgContainer) {
-            const rect = svgContainer.getBoundingClientRect();
-            chartTooltip.style.left = (e.clientX - rect.left) + 'px';
-            chartTooltip.style.top = (e.clientY - rect.top) + 'px';
-          }
-          legendItems.forEach(item => {
-            if (item.getAttribute('data-label') === label) {
-              item.classList.add('highlighted');
-            } else {
-              item.classList.remove('highlighted');
-            }
-          });
-        });
-
-        slice.addEventListener('mouseleave', () => {
-          chartTooltip.style.display = 'none';
-          legendItems.forEach(item => item.classList.remove('highlighted'));
-        });
-
-        slice.addEventListener('click', () => {
-          const label = slice.getAttribute('data-label');
-          filterByChartLabel(label);
-        });
-      });
-
-      legendItems.forEach(item => {
-        const label = item.getAttribute('data-label');
-        item.addEventListener('mouseenter', () => {
-          slices.forEach(slice => {
-            if (slice.getAttribute('data-label') === label) {
-              slice.style.transform = 'scale(1.06)';
-              slice.style.filter = 'brightness(1.2) drop-shadow(0 0 10px rgba(192, 132, 252, 0.6))';
-            } else {
-              slice.style.opacity = '0.4';
-            }
-          });
-        });
-
-        item.addEventListener('mouseleave', () => {
-          slices.forEach(slice => {
-            slice.style.transform = '';
-            slice.style.filter = '';
-            slice.style.opacity = '1';
-          });
-        });
-
-        item.addEventListener('click', () => {
-          filterByChartLabel(label);
-        });
-      });
-    }
-
-    // Filter table by clicked chart category and switch to Live Database Records
-    function filterByChartLabel(label) {
-      if (chartGroupBy === 'technology') {
-        selectedTech = label;
-        searchQuery = '';
-        searchInput.value = '';
-        clearSearchBtn.style.display = 'none';
-      } else {
-        searchQuery = label;
-        searchInput.value = label;
-        clearSearchBtn.style.display = 'block';
-      }
-      switchMainView('records');
-      const tableContainer = document.querySelector('.table-container');
-      if (tableContainer) tableContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }
-
-    // Group By Toggle Listeners
-    if (chartByTech && chartByStatus) {
-      chartByTech.addEventListener('click', () => {
-        if (chartGroupBy !== 'technology') {
-          chartGroupBy = 'technology';
-          chartByTech.classList.add('active');
-          chartByStatus.classList.remove('active');
-          renderPieChart();
-        }
-      });
-      chartByStatus.addEventListener('click', () => {
-        if (chartGroupBy !== 'status') {
-          chartGroupBy = 'status';
-          chartByStatus.classList.add('active');
-          chartByTech.classList.remove('active');
-          renderPieChart();
-        }
-      });
-    }
-
-    // Main View Switching: Projects Distribution vs Live Database Records
-    function switchMainView(viewName) {
-      if (viewName === 'distribution') {
-        btnViewDistribution.classList.add('active');
-        btnViewDistribution.setAttribute('aria-selected', 'true');
-        btnViewRecords.classList.remove('active');
-        btnViewRecords.setAttribute('aria-selected', 'false');
-        panelProjectsDistribution.style.display = 'block';
-        panelLiveRecords.style.display = 'none';
-        renderPieChart();
-      } else if (viewName === 'records') {
-        btnViewRecords.classList.add('active');
-        btnViewRecords.setAttribute('aria-selected', 'true');
-        btnViewDistribution.classList.remove('active');
-        btnViewDistribution.setAttribute('aria-selected', 'false');
-        panelProjectsDistribution.style.display = 'none';
-        panelLiveRecords.style.display = 'block';
-        renderSortMenu();
-        renderTable();
-      }
-    }
-
-    if (btnViewDistribution && btnViewRecords) {
-      btnViewDistribution.addEventListener('click', () => switchMainView('distribution'));
-      btnViewRecords.addEventListener('click', () => switchMainView('records'));
-    }
-    if (shortcutToRecords) {
-      shortcutToRecords.addEventListener('click', () => switchMainView('records'));
-    }
-    if (shortcutBackToDistribution) {
-      shortcutBackToDistribution.addEventListener('click', () => switchMainView('distribution'));
-    }
-
-    // Render Sort Dropdown Menu options
-    function renderSortMenu() {
-      sortDropdownMenu.innerHTML = techOptions.map(t => {
-        const count = t === 'All'
-          ? allProjects.length
-          : allProjects.filter(p => p.technology === t).length;
-        const isSelected = selectedTech === t;
-        const activeClass = isSelected ? 'active' : '';
-        const checkIcon = isSelected ? '✓ ' : '';
-        return '<button type="button" class="sort-option ' + activeClass + '" data-tech="' + t + '">' +
-               '<span>' + checkIcon + t + '</span>' +
-               '<span class="sort-badge">' + count + '</span>' +
-               '</button>';
-      }).join('');
-      sortCurrentLabel.textContent = selectedTech;
-    }
-
-    // Toggle Dropdown Menu
-    btnSort.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const isOpen = sortDropdownMenu.style.display === 'block';
-      sortDropdownMenu.style.display = isOpen ? 'none' : 'block';
-      sortArrow.textContent = isOpen ? '▼' : '▲';
-    });
-
-    // Close Dropdown when clicking outside
-    document.addEventListener('click', (e) => {
-      if (sortWrapper && !sortWrapper.contains(e.target)) {
-        sortDropdownMenu.style.display = 'none';
-        sortArrow.textContent = '▼';
-      }
-    });
-
-    // Close Dropdown on Escape
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') {
-        sortDropdownMenu.style.display = 'none';
-        sortArrow.textContent = '▼';
-      }
-    });
-
-    // Event Delegation for Sort Option selection
-    sortDropdownMenu.addEventListener('click', (e) => {
-      const btn = e.target.closest('.sort-option');
-      if (!btn) return;
-      selectedTech = btn.getAttribute('data-tech');
-      searchQuery = '';
-      searchInput.value = '';
-      clearSearchBtn.style.display = 'none';
-      sortDropdownMenu.style.display = 'none';
-      sortArrow.textContent = '▼';
-      renderSortMenu();
-      renderTable();
-    });
-
-    // Populate Edit dropdown options
-    function populateEditSelect(selectedId) {
-      if (allProjects.length === 0) {
-        editSelect.innerHTML = '<option value="">No projects available</option>';
-        editName.value = '';
-        editDesc.value = '';
-        return;
-      }
-      editSelect.innerHTML = allProjects.map(p => {
-        return '<option value="' + p.id + '">' +
-               '#' + p.id + ' - ' + escapeHtml(p.name) + ' (' + escapeHtml(p.technology) + ')' +
-               '</option>';
-      }).join('');
-      if (selectedId) {
-        editSelect.value = String(selectedId);
-      }
-      loadSelectedProjectForEditing();
-    }
-
-    // Load selected project data into the edit inputs
-    function loadSelectedProjectForEditing() {
-      const currentId = editSelect.value;
-      const project = allProjects.find(p => String(p.id) === String(currentId));
-      if (project) {
-        editName.value = project.name || '';
-        editDesc.value = project.description || '';
-        editTech.value = project.technology || 'Python';
-        editStatus.value = project.status || 'In Progress';
-      }
-    }
-
-    editSelect.addEventListener('change', loadSelectedProjectForEditing);
-
-    // Tab switching handlers
-    tabAdd.addEventListener('click', () => {
-      tabAdd.classList.add('active');
-      tabEdit.classList.remove('active');
-      panelAdd.style.display = 'block';
-      panelEdit.style.display = 'none';
-    });
-
-    tabEdit.addEventListener('click', () => {
-      tabEdit.classList.add('active');
-      tabAdd.classList.remove('active');
-      panelAdd.style.display = 'none';
-      panelEdit.style.display = 'block';
-      populateEditSelect();
-      editName.focus();
-    });
-
-    // Render Projects Table
     function renderTable() {
-      const q = searchQuery.trim().toLowerCase();
-      const filtered = allProjects.filter(p => {
-        // Filter by selected category button
-        const matchTech = selectedTech === 'All' || p.technology === selectedTech;
-        if (!matchTech) return false;
+      // Filter projects client-side if needed
+      let filtered = [...allProjects];
 
-        // If no search query, show all records in category normally
-        if (!q) return true;
-
-        // When searched, show ONLY matching records
-        const nameStr = (p.name || '').toLowerCase();
-        const descStr = (p.description || '').toLowerCase();
-        const techStr = (p.technology || '').toLowerCase();
-        const statusStr = (p.status || '').toLowerCase();
-        const idStr = String(p.id);
-
-        return nameStr.includes(q) ||
-          descStr.includes(q) ||
-          techStr.includes(q) ||
-          statusStr.includes(q) ||
-          idStr === q ||
-          ('#' + idStr) === q;
-      });
-
-      // Update counter
-      if (filtered.length === allProjects.length && !q && selectedTech === 'All') {
-        recordsCounter.textContent = 'Showing all ' + allProjects.length + ' records';
-      } else {
-        recordsCounter.textContent = 'Showing ' + filtered.length + ' of ' + allProjects.length + ' records';
+      if (searchQuery) {
+        const lower = searchQuery.toLowerCase();
+        filtered = filtered.filter(p => 
+          (p.name && p.name.toLowerCase().includes(lower)) ||
+          (p.description && p.description.toLowerCase().includes(lower)) ||
+          (p.owner_name && p.owner_name.toLowerCase().includes(lower)) ||
+          (p.technology && p.technology.toLowerCase().includes(lower))
+        );
       }
 
-      // Update search/filter meta display
-      if (searchQuery || selectedTech !== 'All') {
-        searchMeta.style.display = 'flex';
-        let metaHtml = '<span>Showing: ';
-        if (selectedTech !== 'All') metaHtml += 'category <strong>' + escapeHtml(selectedTech) + '</strong>';
-        if (selectedTech !== 'All' && searchQuery) metaHtml += ' + ';
-        if (searchQuery) metaHtml += 'search "<strong>' + escapeHtml(searchQuery) + '</strong>"';
-        metaHtml += '</span>';
-        searchMetaText.innerHTML = metaHtml;
-      } else {
-        searchMeta.style.display = 'none';
+      if (selectedTech !== 'All') {
+        filtered = filtered.filter(p => p.technology === selectedTech);
       }
 
-      // Render table rows
+      if (currentUser && currentUser.role === 'manager' && selectedUserFilter !== 'All') {
+        filtered = filtered.filter(p => String(p.user_id) === String(selectedUserFilter));
+      }
+
+      // Sort: If manager, sorted by owner_name ASC then ID DESC. If user, sorted by ID DESC.
+      if (currentUser && currentUser.role === 'manager') {
+        filtered.sort((a, b) => {
+          const nameA = (a.owner_name || '').toLowerCase();
+          const nameB = (b.owner_name || '').toLowerCase();
+          if (nameA < nameB) return -1;
+          if (nameA > nameB) return 1;
+          return Number(b.id) - Number(a.id);
+        });
+      } else {
+        filtered.sort((a, b) => Number(b.id) - Number(a.id));
+      }
+
+      recordCounter.textContent = `Showing ${filtered.length} of ${allProjects.length} records`;
+
       if (filtered.length === 0) {
-        if (allProjects.length > 0) {
-          const reason = searchQuery ? 'search for "' + escapeHtml(searchQuery) + '"' : 'category "' + escapeHtml(selectedTech) + '"';
-          projectsTbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #94a3b8; padding: 2.5rem;">' +
-            '🔍 No projects match your ' + reason + '.' +
-            '<br><button type="button" class="btn-link" id="empty-clear-btn" style="margin-top: 0.75rem;">Show all records</button>' +
-            '</td></tr>';
-          const emptyBtn = document.getElementById('empty-clear-btn');
-          if (emptyBtn) emptyBtn.addEventListener('click', resetFilters);
-        } else {
-          projectsTbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #64748b; padding: 2rem;">No records found in database.</td></tr>';
-        }
+        const colSpan = (currentUser && currentUser.role === 'manager') ? 7 : 6;
+        projectsTbody.innerHTML = `<tr><td colspan="${colSpan}" style="text-align: center; color: #a79fc2; padding: 2rem;">No matching projects found.</td></tr>`;
         return;
       }
 
-      projectsTbody.innerHTML = filtered.map(p => {
-        let badgeClass = 'badge-py';
-        if (p.technology === 'SQL') badgeClass = 'badge-sql';
-        else if (p.technology === 'React') badgeClass = 'badge-react';
+      const rows = filtered.map(p => {
+        const badgeClass = 'badge-' + (p.technology || 'python').toLowerCase();
+        const flashClass = p._isNew ? 'new-row-flash' : '';
+        const isManager = currentUser && currentUser.role === 'manager';
+        
+        let ownerTd = '';
+        if (isManager) {
+          const ownerBadgeClass = (p.owner_role === 'manager') ? 'badge-user-owner manager-owner' : 'badge-user-owner';
+          const icon = (p.owner_role === 'manager') ? '👑' : '👤';
+          ownerTd = `<td><span class="${ownerBadgeClass}">${icon} ${escapeHtml(p.owner_name || 'User ' + p.user_id)}</span></td>`;
+        }
 
-        const flashClass = p._isNew ? ' class="new-row-flash"' : '';
-        return '<tr' + flashClass + '>' +
-          '<td>#' + p.id + '</td>' +
-          '<td style="font-weight: 600;">' + highlight(p.name, searchQuery) + '</td>' +
-          '<td style="color: #a79fc2;">' + highlight(p.description, searchQuery) + '</td>' +
-          '<td><span class="badge ' + badgeClass + '">' + escapeHtml(p.technology) + '</span></td>' +
-          '<td><span class="status-badge">' + escapeHtml(p.status) + '</span></td>' +
-          '<td><button type="button" class="btn-danger" data-id="' + p.id + '">Delete</button></td>' +
-          '</tr>';
-      }).join('');
+        return `
+          <tr class="${flashClass}">
+            <td>#${p.id}</td>
+            <td style="font-weight: 600;">${escapeHtml(p.name)}</td>
+            <td style="color: #a79fc2;">${escapeHtml(p.description)}</td>
+            <td><span class="badge ${badgeClass}">${escapeHtml(p.technology)}</span></td>
+            <td><span class="status-badge">${escapeHtml(p.status || 'In Progress')}</span></td>
+            ${ownerTd}
+            <td><button type="button" class="btn-danger" onclick="deleteProject(${p.id})">Delete</button></td>
+          </tr>
+        `;
+      });
 
-      // Reset temporary flash flag after rendering
-      filtered.forEach(p => { if (p._isNew) delete p._isNew; });
-
+      projectsTbody.innerHTML = rows.join('');
     }
 
-    // Event delegation: Delete project row
-    projectsTbody.addEventListener('click', (e) => {
-      const deleteBtn = e.target.closest('.btn-danger');
-      if (deleteBtn) {
-        const id = deleteBtn.getAttribute('data-id');
-        if (id) deleteProject(id);
-      }
-    });
+    // -------------------------------------------------------------
+    // Controls: Search, Sort Dropdown & User Filter
+    // -------------------------------------------------------------
+    function renderSortMenu() {
+      const techList = ['All', 'Python', 'SQL', 'React', 'Fullstack'];
+      sortDropdownLabel.textContent = `🏷️ Tech: ${selectedTech}`;
 
-    // Reset all filters
-    function resetFilters() {
-      searchQuery = '';
-      selectedTech = 'All';
-      searchInput.value = '';
-      clearSearchBtn.style.display = 'none';
+      sortDropdownMenu.innerHTML = techList.map(t => {
+        const count = (t === 'All') ? allProjects.length : allProjects.filter(p => p.technology === t).length;
+        const active = (t === selectedTech) ? 'active' : '';
+        const check = (t === selectedTech) ? '✓ ' : '';
+        return `
+          <button type="button" class="dropdown-item ${active}" onclick="selectTechFilter('${t}')">
+            <span>${check}${t}</span>
+            <span style="font-size: 0.75rem; background: #282147; padding: 0.1rem 0.4rem; border-radius: 0.25rem;">${count}</span>
+          </button>
+        `;
+      }).join('');
+    }
+
+    window.selectTechFilter = function(t) {
+      selectedTech = t;
+      sortDropdownMenu.classList.remove('show');
       renderSortMenu();
       renderTable();
-    }
-    resetFiltersBtn.addEventListener('click', resetFilters);
+      renderPieChart();
+    };
 
-    // Execute search when user clicks Search button or presses Enter
-    function executeSearch() {
-      searchQuery = searchInput.value.trim();
-      clearSearchBtn.style.display = searchInput.value ? 'block' : 'none';
-      renderTable();
-    }
-
-    btnSearch.addEventListener('click', executeSearch);
-
-    searchInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        executeSearch();
-      }
+    btnSortToggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      sortDropdownMenu.classList.toggle('show');
+      userFilterDropdownMenu.classList.remove('show');
     });
 
-    // Update clear button visibility as user types, and if cleared, auto-reset search
-    searchInput.addEventListener('input', () => {
-      clearSearchBtn.style.display = searchInput.value ? 'block' : 'none';
-      if (searchInput.value.trim() === '' && searchQuery !== '') {
-        searchQuery = '';
-        renderTable();
+    function renderUserFilterMenu() {
+      if (!currentUser || currentUser.role !== 'manager') return;
+      
+      let currentLabel = 'All';
+      if (selectedUserFilter !== 'All') {
+        const u = allUsers.find(x => String(x.id) === String(selectedUserFilter));
+        currentLabel = u ? u.full_name : selectedUserFilter;
       }
+      userFilterLabel.textContent = `👥 User: ${currentLabel}`;
+
+      const options = [
+        { id: 'All', name: 'All Users', count: allProjects.length },
+        ...allUsers.map(u => ({
+          id: String(u.id),
+          name: u.full_name,
+          count: allProjects.filter(p => String(p.user_id) === String(u.id)).length
+        }))
+      ];
+
+      userFilterDropdownMenu.innerHTML = options.map(opt => {
+        const active = (opt.id === selectedUserFilter) ? 'active' : '';
+        const check = (opt.id === selectedUserFilter) ? '✓ ' : '';
+        return `
+          <button type="button" class="dropdown-item ${active}" onclick="selectUserFilter('${opt.id}')">
+            <span>${check}${opt.name}</span>
+            <span style="font-size: 0.75rem; background: #282147; padding: 0.1rem 0.4rem; border-radius: 0.25rem;">${opt.count}</span>
+          </button>
+        `;
+      }).join('');
+    }
+
+    window.selectUserFilter = function(uid) {
+      selectedUserFilter = uid;
+      userFilterDropdownMenu.classList.remove('show');
+      renderUserFilterMenu();
+      renderTable();
+      renderPieChart();
+    };
+
+    btnUserFilterToggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      userFilterDropdownMenu.classList.toggle('show');
+      sortDropdownMenu.classList.remove('show');
+    });
+
+    document.addEventListener('click', () => {
+      sortDropdownMenu.classList.remove('show');
+      userFilterDropdownMenu.classList.remove('show');
+    });
+
+    // Search controls
+    searchInput.addEventListener('input', () => {
+      searchQuery = searchInput.value.trim();
+      clearSearchBtn.style.display = searchQuery ? 'block' : 'none';
+      renderTable();
     });
 
     clearSearchBtn.addEventListener('click', () => {
@@ -1553,65 +1894,70 @@ __INITIAL_PIE_LEGEND__
       searchInput.focus();
     });
 
-    // Fetch API Data
-    async function fetchProjects() {
-      try {
-        const res = await fetch('/api/projects');
-        allProjects = await res.json();
-        allProjects.sort((a, b) => Number(b.id) - Number(a.id));
-        renderTable();
-        renderSortMenu();
-        renderPieChart();
-        populateEditSelect(editSelect.value);
-        if (tabRecordsCount) tabRecordsCount.textContent = allProjects.length;
-      } catch (err) {
-        console.error('Error fetching projects:', err);
-        projectsTbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#ef4444; padding:2rem;">Error connecting to Python backend.</td></tr>';
-      }
-    }
-
-    async function fetchStats() {
-      try {
-        const res = await fetch('/api/stats');
-        const data = await res.json();
-        if (tabRecordsCount && data.total !== undefined) {
-          tabRecordsCount.textContent = data.total;
-        }
-      } catch (err) {
-        console.error('Error fetching stats:', err);
-      }
-    }
-
-    // Insert New Project with Instant Real-Time UI Update
-    projectForm.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const nameInput = document.getElementById('proj-name');
-      const descInput = document.getElementById('proj-desc');
-      const techInput = document.getElementById('proj-tech');
-      const btnSubmit = document.getElementById('btn-submit');
-
-      const name = nameInput.value.trim();
-      const desc = descInput.value.trim();
-      const tech = techInput.value;
-      if (!name) {
-        nameInput.focus();
-        nameInput.style.borderColor = '#ef4444';
-        setTimeout(() => { nameInput.style.borderColor = '#3b3263'; }, 1500);
+    // -------------------------------------------------------------
+    // Edit Form Selector & Population
+    // -------------------------------------------------------------
+    function populateEditSelect(selectedId) {
+      if (allProjects.length === 0) {
+        editSelect.innerHTML = '<option value="">No projects available</option>';
+        editName.value = '';
+        editDesc.value = '';
         return;
       }
 
-      // Clear input fields immediately so user can type next entry
-      nameInput.value = '';
-      descInput.value = '';
+      editSelect.innerHTML = allProjects.map(p => {
+        const ownerTag = (currentUser && currentUser.role === 'manager' && p.owner_name) ? ` [${p.owner_name}]` : '';
+        return `<option value="${p.id}">#${p.id} - ${escapeHtml(p.name)} (${p.technology})${ownerTag}</option>`;
+      }).join('');
 
-      // Instant optimistic UI update: find lowest available ID in sequence (starting from 1) to reuse deleted IDs
+      if (selectedId && allProjects.some(p => String(p.id) === String(selectedId))) {
+        editSelect.value = selectedId;
+      } else {
+        editSelect.value = allProjects[0].id;
+      }
+      onEditSelectChange();
+    }
+
+    function onEditSelectChange() {
+      const target = allProjects.find(p => String(p.id) === String(editSelect.value));
+      if (target) {
+        editName.value = target.name || '';
+        editDesc.value = target.description || '';
+        editTech.value = target.technology || 'Python';
+        editStatus.value = target.status || 'In Progress';
+        if (editUser && target.user_id) {
+          editUser.value = target.user_id;
+        }
+      }
+    }
+
+    editSelect.addEventListener('change', onEditSelectChange);
+
+    // -------------------------------------------------------------
+    // CRUD Submissions with Instant Real-Time UI Updates
+    // -------------------------------------------------------------
+    projectForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = document.getElementById('proj-name').value.trim();
+      const desc = document.getElementById('proj-desc').value.trim();
+      const tech = document.getElementById('proj-tech').value;
+      const assignedUid = (currentUser.role === 'manager' && projUserAdd) ? parseInt(projUserAdd.value) : currentUser.id;
+
+      if (!name) return;
+
+      // Find owner name for UI
+      const ownerObj = allUsers.find(u => u.id === assignedUid) || currentUser;
+
+      // Optimistic ID
       const existingIds = new Set(allProjects.map(p => Number(p.id)));
       let nextId = 1;
-      while (existingIds.has(nextId)) {
-        nextId++;
-      }
-      const newRecord = {
+      while (existingIds.has(nextId)) nextId++;
+
+      const optimisticRecord = {
         id: nextId,
+        user_id: assignedUid,
+        owner_name: ownerObj.full_name,
+        owner_role: ownerObj.role,
         name: name,
         description: desc,
         technology: tech,
@@ -1619,165 +1965,276 @@ __INITIAL_PIE_LEGEND__
         _isNew: true
       };
 
-      allProjects.push(newRecord);
-      allProjects.sort((a, b) => Number(b.id) - Number(a.id));
+      // Clear input fields immediately
+      document.getElementById('proj-name').value = '';
+      document.getElementById('proj-desc').value = '';
 
-      // Make sure the new row is visible in the table
-      if (selectedTech !== 'All' && selectedTech !== tech) {
-        selectedTech = 'All';
-      }
-      searchQuery = '';
-      searchInput.value = '';
-      clearSearchBtn.style.display = 'none';
-
-      // Update UI in real-time (0ms delay)
-      renderSortMenu();
-      renderTable();
-      renderPieChart();
-      populateEditSelect(newRecord.id);
+      allProjects.push(optimisticRecord);
       if (tabRecordsCount) tabRecordsCount.textContent = allProjects.length;
+      renderTable();
+      renderSortMenu();
+      renderUserFilterMenu();
+      renderPieChart();
+      populateEditSelect(optimisticRecord.id);
 
-      // Asynchronously persist to SQLite in background
       try {
         const res = await fetch('/api/projects', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, description: desc, technology: tech })
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + authToken
+          },
+          body: JSON.stringify({ name, description: desc, technology: tech, user_id: assignedUid })
         });
         if (!res.ok) throw new Error('Server returned ' + res.status);
         const data = await res.json();
-        if (data && data.id) {
-          newRecord.id = data.id;
-          allProjects.sort((a, b) => Number(b.id) - Number(a.id));
-          renderTable();
-          renderPieChart();
-          populateEditSelect(data.id);
-        }
-        fetchStats();
-      } catch (err) {
-        // Rollback on failure
-        allProjects = allProjects.filter(p => p !== newRecord);
-        allProjects.sort((a, b) => Number(b.id) - Number(a.id));
-        renderSortMenu();
+        optimisticRecord.id = data.id;
         renderTable();
         renderPieChart();
-        populateEditSelect();
+      } catch (err) {
+        allProjects = allProjects.filter(p => p !== optimisticRecord);
         if (tabRecordsCount) tabRecordsCount.textContent = allProjects.length;
-        alert('Error saving project to database: ' + err.message);
+        renderTable();
+        renderPieChart();
+        alert('Error saving project: ' + err.message);
       }
     });
 
-    // Update Existing Project with Instant Real-Time UI Update
     editForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       const id = editSelect.value;
-      if (!id) {
-        alert('Please select a project to edit.');
-        return;
-      }
+      if (!id) return;
+
       const name = editName.value.trim();
       const desc = editDesc.value.trim();
       const tech = editTech.value;
       const status = editStatus.value;
+      const assignedUid = (currentUser.role === 'manager' && editUser) ? parseInt(editUser.value) : undefined;
 
-      if (!name) {
-        editName.focus();
-        editName.style.borderColor = '#ef4444';
-        setTimeout(() => { editName.style.borderColor = '#3b3263'; }, 1500);
-        return;
+      const target = allProjects.find(p => String(p.id) === String(id));
+      if (!target) return;
+
+      const prevCopy = { ...target };
+      target.name = name;
+      target.description = desc;
+      target.technology = tech;
+      target.status = status;
+      if (assignedUid) {
+        target.user_id = assignedUid;
+        const u = allUsers.find(x => x.id === assignedUid);
+        if (u) {
+          target.owner_name = u.full_name;
+          target.owner_role = u.role;
+        }
       }
+      target._isNew = true;
 
-      const prevProjects = JSON.parse(JSON.stringify(allProjects));
-      const targetProj = allProjects.find(p => String(p.id) === String(id));
-      if (!targetProj) return;
-
-      targetProj.name = name;
-      targetProj.description = desc;
-      targetProj.technology = tech;
-      targetProj.status = status;
-      targetProj._isNew = true;
-
-      // Update UI immediately
-      renderSortMenu();
       renderTable();
+      renderSortMenu();
+      renderUserFilterMenu();
       renderPieChart();
-      populateEditSelect(id);
 
-      // Save button visual feedback
-      btnUpdate.textContent = '✓ Saved!';
+      const btnUpdate = document.getElementById('btn-update');
+      btnUpdate.textContent = '💾 Saved!';
       btnUpdate.style.background = '#059669';
       setTimeout(() => {
-        btnUpdate.textContent = '💾 Save Changes';
+        btnUpdate.textContent = '✏️ Update Record in SQLite';
         btnUpdate.style.background = '#9333ea';
       }, 1200);
 
-      // Asynchronously persist to SQLite in background
       try {
         const res = await fetch('/api/projects/' + id, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, description: desc, technology: tech, status })
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + authToken
+          },
+          body: JSON.stringify({ name, description: desc, technology: tech, status, user_id: assignedUid })
         });
         if (!res.ok) throw new Error('Server returned ' + res.status);
       } catch (err) {
-        allProjects = prevProjects;
-        renderSortMenu();
+        Object.assign(target, prevCopy);
         renderTable();
         renderPieChart();
-        populateEditSelect(id);
         alert('Error updating project: ' + err.message);
       }
     });
 
-    // Delete Project with Instant Real-Time UI Update
-    async function deleteProject(id) {
+    window.deleteProject = async function(id) {
+      if (!confirm(`Are you sure you want to delete Project #${id}?`)) return;
+
       const prevProjects = [...allProjects];
       allProjects = allProjects.filter(p => String(p.id) !== String(id));
-      renderSortMenu();
-      renderTable();
-      renderPieChart();
-      populateEditSelect();
       if (tabRecordsCount) tabRecordsCount.textContent = allProjects.length;
 
+      renderTable();
+      renderSortMenu();
+      renderUserFilterMenu();
+      renderPieChart();
+      populateEditSelect();
+
       try {
-        const res = await fetch('/api/projects/' + id, { method: 'DELETE' });
+        const res = await fetch('/api/projects/' + id, {
+          method: 'DELETE',
+          headers: { 'Authorization': 'Bearer ' + authToken }
+        });
         if (!res.ok) throw new Error('Server returned ' + res.status);
-        fetchStats();
       } catch (err) {
         allProjects = prevProjects;
-        renderSortMenu();
+        if (tabRecordsCount) tabRecordsCount.textContent = allProjects.length;
         renderTable();
         renderPieChart();
         populateEditSelect();
-        if (tabRecordsCount) tabRecordsCount.textContent = allProjects.length;
         alert('Error deleting project: ' + err.message);
       }
+    };
+
+    // -------------------------------------------------------------
+    // Projects Distribution (Pie Chart Rendering)
+    // -------------------------------------------------------------
+    tabChartTech.addEventListener('click', () => setChartGroup('technology'));
+    tabChartStatus.addEventListener('click', () => setChartGroup('status'));
+    tabChartUser.addEventListener('click', () => setChartGroup('user'));
+
+    function setChartGroup(group) {
+      currentChartGroup = group;
+      tabChartTech.classList.toggle('active', group === 'technology');
+      tabChartStatus.classList.toggle('active', group === 'status');
+      tabChartUser.classList.toggle('active', group === 'user');
+      renderPieChart();
     }
 
-    // Initial instant render from pre-loaded SQLite data
-    renderSortMenu();
-    renderTable();
-    renderPieChart();
-    populateEditSelect();
-    if (tabRecordsCount) tabRecordsCount.textContent = allProjects.length;
+    function renderPieChart() {
+      // Calculate counts from currently loaded projects
+      const counts = {};
+      allProjects.forEach(p => {
+        let key = 'Other';
+        if (currentChartGroup === 'technology') {
+          key = p.technology || 'Other';
+        } else if (currentChartGroup === 'status') {
+          key = p.status || 'In Progress';
+        } else if (currentChartGroup === 'user') {
+          key = p.owner_name || `User ${p.user_id}`;
+        }
+        counts[key] = (counts[key] || 0) + 1;
+      });
 
-    // Background live refreshes
-    fetchProjects();
-    fetchStats();
+      // Sort slices by value descending
+      const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+      const total = allProjects.length;
+
+      if (total === 0) {
+        pieChartSvg.innerHTML = '<text x="130" y="130" text-anchor="middle" dominant-baseline="central" fill="#94a3b8" font-size="13">No records found</text>';
+        pieChartLegend.innerHTML = '<div style="color: #64748b; font-size: 0.85rem; text-align: center; padding: 1rem;">No data in database</div>';
+        return;
+      }
+
+      const cx = 130, cy = 130, r = 95;
+      let svgHtml = '';
+      let legendHtml = '';
+
+      if (sorted.length === 1) {
+        const [label, count] = sorted[0];
+        const color = palette[label] || fallbackColors[0];
+        svgHtml = `
+          <circle cx="${cx}" cy="${cy}" r="${r}" fill="${color}" stroke="#1c1735" stroke-width="2" class="pie-slice" data-label="${escapeHtml(label)}"/>
+          <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" fill="#ffffff" font-size="13" font-weight="700">100%</text>
+        `;
+        legendHtml = `
+          <div class="legend-item" data-label="${escapeHtml(label)}">
+            <div class="legend-left">
+              <span class="legend-rank">#1</span>
+              <span class="legend-color-dot" style="background: ${color};"></span>
+              <span class="legend-label">${escapeHtml(label)}</span>
+            </div>
+            <div class="legend-right">
+              <span class="legend-value">${count}</span>
+              <span class="legend-percent">100.0%</span>
+            </div>
+          </div>
+        `;
+      } else {
+        let currentAngle = -Math.PI / 2;
+        sorted.forEach(([label, count], index) => {
+          const rank = index + 1;
+          const color = palette[label] || fallbackColors[(rank - 1) % fallbackColors.length];
+          const frac = count / total;
+          const angle = frac * 2 * Math.PI;
+          const startAngle = currentAngle;
+          const endAngle = currentAngle + angle;
+          currentAngle = endAngle;
+
+          const x1 = cx + r * Math.cos(startAngle);
+          const y1 = cy + r * Math.sin(startAngle);
+          const x2 = cx + r * Math.cos(endAngle);
+          const y2 = cy + r * Math.sin(endAngle);
+          const large = angle > Math.PI ? 1 : 0;
+          const pct = (frac * 100).toFixed(1);
+
+          const pathD = `M ${cx} ${cy} L ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${large} 1 ${x2.toFixed(2)} ${y2.toFixed(2)} Z`;
+          svgHtml += `<path d="${pathD}" fill="${color}" stroke="#1c1735" stroke-width="2" class="pie-slice" data-label="${escapeHtml(label)}"/>`;
+
+          if (frac >= 0.12) {
+            const midAngle = (startAngle + endAngle) / 2;
+            const lx = cx + (r * 0.65) * Math.cos(midAngle);
+            const ly = cy + (r * 0.65) * Math.sin(midAngle);
+            svgHtml += `<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="middle" dominant-baseline="central" fill="#ffffff" font-size="11" font-weight="700" pointer-events="none">${Math.round(frac*100)}%</text>`;
+          }
+
+          legendHtml += `
+            <div class="legend-item" data-label="${escapeHtml(label)}">
+              <div class="legend-left">
+                <span class="legend-rank">#${rank}</span>
+                <span class="legend-color-dot" style="background: ${color};"></span>
+                <span class="legend-label">${escapeHtml(label)}</span>
+              </div>
+              <div class="legend-right">
+                <span class="legend-value">${count}</span>
+                <span class="legend-percent">${pct}%</span>
+              </div>
+            </div>
+          `;
+        });
+      }
+
+      pieChartSvg.innerHTML = svgHtml;
+      pieChartLegend.innerHTML = legendHtml;
+
+      // Add interactive hover sync between legend items and pie slices
+      const slices = pieChartSvg.querySelectorAll('.pie-slice');
+      const legendItems = pieChartLegend.querySelectorAll('.legend-item');
+
+      legendItems.forEach(item => {
+        const lbl = item.getAttribute('data-label');
+        item.addEventListener('mouseenter', () => {
+          slices.forEach(s => {
+            if (s.getAttribute('data-label') === lbl) {
+              s.style.opacity = '1';
+              s.style.transform = 'scale(1.04)';
+              s.style.transformOrigin = '130px 130px';
+            } else {
+              s.style.opacity = '0.35';
+            }
+          });
+        });
+        item.addEventListener('mouseleave', () => {
+          slices.forEach(s => {
+            s.style.opacity = '1';
+            s.style.transform = 'none';
+          });
+        });
+      });
+    }
+
+    // -------------------------------------------------------------
+    // Initial Startup Check
+    // -------------------------------------------------------------
+    checkExistingAuth();
   </script>
 </body>
 </html>
 """
-        page_html = (page_template
-                     .replace("__INITIAL_PROJECTS__", initial_json)
-                     .replace("__TOTAL_COUNT__", str(total_count))
-                     .replace("__INITIAL_PIE_SVG__", initial_pie_svg)
-                     .replace("__INITIAL_PIE_LEGEND__", initial_pie_legend)
-                     .replace("__INITIAL_TABLE_ROWS__", rows_html)
-                     .replace("__INITIAL_SORT_OPTIONS__", sort_options_html)
-                     .replace("__INITIAL_EDIT_OPTIONS__", edit_options_html)
-                     .replace("__INITIAL_COUNTER__", counter_text))
-        body = page_html.encode("utf-8")
+        body = html_content.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -1787,7 +2244,7 @@ __INITIAL_PIE_LEGEND__
         self.end_headers()
         self.wfile.write(body)
 
-# Multi-threaded server: handles concurrent requests in parallel so nothing hangs
+# Multi-threaded server: handles concurrent requests in parallel
 class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -1795,7 +2252,7 @@ class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
 def run():
     with ThreadedTCPServer(("", PORT), RequestHandler) as httpd:
         print(f"🚀 Python server running at http://127.0.0.1:{PORT}")
-        print("💡 Tech Stack: Python (Backend) + SQLite (SQL) + React (Frontend)")
+        print("💡 Tech Stack: Python (Backend) + SQLite (SQL Relational DB) + Role-Based Auth")
         print("Press Ctrl+C to stop.")
         try:
             httpd.serve_forever()
