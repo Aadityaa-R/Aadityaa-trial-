@@ -47,6 +47,7 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE NOT NULL,
         email TEXT UNIQUE NOT NULL,
+        phone TEXT UNIQUE,
         password_hash TEXT NOT NULL,
         full_name TEXT NOT NULL,
         role TEXT CHECK(role IN ('manager', 'user')) NOT NULL DEFAULT 'user',
@@ -54,15 +55,23 @@ def init_db():
     );
     """)
 
+    # Check for phone column (migration)
+    cursor.execute("PRAGMA table_info(users);")
+    cols = [col[1] for col in cursor.fetchall()]
+    if "phone" not in cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN phone TEXT UNIQUE;")
+        conn.commit()
+
     # 2. Seed default Manager if users table is empty
     cursor.execute("SELECT COUNT(*) FROM users;")
     if cursor.fetchone()[0] == 0:
         cursor.execute("""
-        INSERT INTO users (username, email, password_hash, full_name, role)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO users (username, email, phone, password_hash, full_name, role)
+        VALUES (?, ?, ?, ?, ?, ?)
         """, (
             "aadityaa",
             "aadityaarwork@gmail.com",
+            "7338966459",
             hash_password("123456"),
             "Aadityaa R",
             "manager"
@@ -150,7 +159,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 conn = sqlite3.connect(DB_FILE)
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
-                cursor.execute("SELECT id, username, email, full_name, role FROM users ORDER BY full_name ASC")
+                cursor.execute("SELECT id, username, email, phone, full_name, role FROM users ORDER BY full_name ASC")
                 users_list = [dict(r) for r in cursor.fetchall()]
                 conn.close()
                 self._send_json(200, users_list)
@@ -283,12 +292,12 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 conn = sqlite3.connect(DB_FILE)
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
-                # Accept login by either email or username
+                # Accept login by email, username, or phone
                 cursor.execute("""
-                SELECT id, username, email, full_name, role, password_hash
+                SELECT id, username, email, phone, full_name, role, password_hash
                 FROM users
-                WHERE username = ? OR email = ?
-                """, (login_identifier, login_identifier))
+                WHERE username = ? OR email = ? OR phone = ?
+                """, (login_identifier, login_identifier, login_identifier))
                 row = cursor.fetchone()
                 conn.close()
 
@@ -298,6 +307,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                         "id": row["id"],
                         "username": row["username"],
                         "email": row["email"],
+                        "phone": row["phone"],
                         "full_name": row["full_name"],
                         "role": row["role"]
                     }
