@@ -16,6 +16,7 @@ import os
 import urllib.parse
 import hashlib
 import secrets
+import time
 from html import escape as html_escape
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -29,6 +30,15 @@ socketserver.TCPServer.allow_reuse_address = True
 
 # In-memory session store: token -> user dict
 SESSIONS = {}
+
+# In-memory OTP store: phone -> {otp, user_id, expires_at, created_at, attempts}
+OTP_STORE = {}
+
+def normalize_phone(phone_str: str) -> str:
+    digits = "".join(ch for ch in str(phone_str) if ch.isdigit())
+    if len(digits) == 12 and digits.startswith("91"):
+        digits = digits[2:]
+    return digits
 
 def hash_password(password: str) -> str:
     salt = "projects_tracker_salt_v1"
@@ -330,6 +340,123 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 if token and token in SESSIONS:
                     del SESSIONS[token]
                 self._send_json(200, {"success": True, "message": "Logged out successfully"})
+                return
+
+            elif path == "/api/auth/otp/send":
+                content_length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(content_length).decode("utf-8")
+                data = json.loads(body)
+                raw_phone = data.get("phone", "").strip()
+                phone = normalize_phone(raw_phone)
+
+                if not phone or len(phone) < 10:
+                    self._send_json(400, {"error": "Please enter a valid 10-digit mobile number."})
+                    return
+
+                conn = sqlite3.connect(DB_FILE)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute("""
+                SELECT id, username, email, phone, full_name, role
+                FROM users
+                WHERE phone = ? OR phone = ?
+                """, (phone, f"+91{phone}"))
+                user_row = cursor.fetchone()
+                conn.close()
+
+                if not user_row:
+                    self._send_json(404, {"error": f"No registered account found with mobile number {phone}."})
+                    return
+
+                # Rate limit: cooldown of 15 seconds
+                existing = OTP_STORE.get(phone)
+                now = time.time()
+                if existing and (existing.get("created_at", 0) + 15 > now):
+                    self._send_json(429, {"error": "Please wait a moment before requesting another OTP."})
+                    return
+
+                # Generate 6-digit OTP
+                otp = f"{secrets.randbelow(900000) + 100000}"
+                OTP_STORE[phone] = {
+                    "otp": otp,
+                    "user_id": user_row["id"],
+                    "expires_at": now + 300,
+                    "created_at": now,
+                    "attempts": 0
+                }
+
+                # Server terminal log for dev SMS gateway simulation
+                print(f"📱 [SMS GATEWAY] OTP for {user_row['full_name']} (+91 {phone}): {otp} (valid for 5 mins)")
+
+                self._send_json(200, {
+                    "success": True,
+                    "message": f"Verification code sent to +91 {phone}",
+                    "phone": phone,
+                    "simulated_otp": otp,
+                    "expires_in": 300
+                })
+                return
+
+            elif path == "/api/auth/otp/verify":
+                content_length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(content_length).decode("utf-8")
+                data = json.loads(body)
+                raw_phone = data.get("phone", "").strip()
+                entered_otp = data.get("otp", "").strip()
+                phone = normalize_phone(raw_phone)
+
+                if not phone or not entered_otp:
+                    self._send_json(400, {"error": "Mobile number and 6-digit verification code are required."})
+                    return
+
+                record = OTP_STORE.get(phone)
+                now = time.time()
+                if not record:
+                    self._send_json(400, {"error": "No active OTP request found for this number. Please request a new code."})
+                    return
+
+                if now > record["expires_at"]:
+                    del OTP_STORE[phone]
+                    self._send_json(400, {"error": "Verification code has expired. Please request a new OTP."})
+                    return
+
+                if record["attempts"] >= 5:
+                    del OTP_STORE[phone]
+                    self._send_json(429, {"error": "Too many failed attempts. Please request a new code."})
+                    return
+
+                if record["otp"] != entered_otp:
+                    record["attempts"] += 1
+                    remaining = 5 - record["attempts"]
+                    self._send_json(400, {"error": f"Invalid verification code. {remaining} attempt(s) remaining."})
+                    return
+
+                # OTP is verified!
+                user_id = record["user_id"]
+                del OTP_STORE[phone]
+
+                conn = sqlite3.connect(DB_FILE)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute("SELECT id, username, email, phone, full_name, role FROM users WHERE id = ?", (user_id,))
+                row = cursor.fetchone()
+                conn.close()
+
+                if not row:
+                    self._send_json(404, {"error": "User account not found."})
+                    return
+
+                token = secrets.token_hex(24)
+                user_info = {
+                    "id": row["id"],
+                    "username": row["username"],
+                    "email": row["email"],
+                    "phone": row["phone"],
+                    "full_name": row["full_name"],
+                    "role": row["role"]
+                }
+                SESSIONS[token] = user_info
+                self._send_json(200, {"token": token, "user": user_info})
                 return
 
             elif path == "/api/projects":
@@ -665,6 +792,120 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
       margin-bottom: 1.25rem;
       display: none;
     }
+    .auth-alert-success {
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid #10b981;
+      color: #6ee7b7;
+      padding: 0.75rem 1rem;
+      border-radius: 0.5rem;
+      font-size: 0.85rem;
+      margin-bottom: 1.25rem;
+      display: none;
+    }
+    .auth-method-switcher {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1.25rem;
+      background: #120e24;
+      padding: 0.3rem;
+      border-radius: 0.6rem;
+      border: 1px solid #2e264f;
+    }
+    .auth-method-tab {
+      flex: 1;
+      padding: 0.55rem 0.75rem;
+      border: none;
+      background: transparent;
+      border-radius: 0.45rem;
+      color: #a79fc2;
+      font-weight: 600;
+      font-size: 0.88rem;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-align: center;
+    }
+    .auth-method-tab:hover {
+      background: #241c42;
+      color: #f5f3ff;
+    }
+    .auth-method-tab.active {
+      background: #7c3aed;
+      color: #ffffff;
+      box-shadow: 0 2px 8px rgba(124, 58, 237, 0.4);
+    }
+    /* Simulated Mobile SMS Toast Banner */
+    .sms-toast {
+      position: fixed;
+      top: 1.5rem;
+      right: 1.5rem;
+      background: rgba(28, 23, 53, 0.96);
+      backdrop-filter: blur(14px);
+      border: 1px solid #a855f7;
+      box-shadow: 0 12px 35px rgba(0, 0, 0, 0.6), 0 0 18px rgba(168, 85, 247, 0.35);
+      border-radius: 0.85rem;
+      padding: 1rem 1.25rem;
+      max-width: 380px;
+      z-index: 9999;
+      animation: slideInToast 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    @keyframes slideInToast {
+      from { opacity: 0; transform: translateY(-20px) scale(0.95); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    .sms-toast-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 0.5rem;
+      font-size: 0.8rem;
+      color: #c4b5fd;
+    }
+    .sms-toast-icon { font-size: 1.1rem; margin-right: 0.35rem; }
+    .sms-toast-app { font-weight: 600; }
+    .sms-toast-close {
+      background: transparent;
+      border: none;
+      color: #a79fc2;
+      cursor: pointer;
+      font-size: 0.85rem;
+      padding: 0 0.2rem;
+    }
+    .sms-toast-close:hover { color: #f5f3ff; }
+    .sms-toast-body {
+      font-size: 0.85rem;
+      color: #f5f3ff;
+      line-height: 1.45;
+      margin-bottom: 0.65rem;
+    }
+    .sms-code-highlight {
+      background: #7c3aed;
+      color: #ffffff;
+      padding: 0.15rem 0.45rem;
+      border-radius: 0.3rem;
+      font-family: monospace;
+      font-weight: 800;
+      letter-spacing: 0.08rem;
+    }
+    .sms-toast-btn {
+      width: 100%;
+      background: #241c42;
+      border: 1px solid #7c3aed;
+      color: #e9d5ff;
+      padding: 0.45rem 0.75rem;
+      border-radius: 0.4rem;
+      font-size: 0.82rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.35rem;
+    }
+    .sms-toast-btn:hover {
+      background: #7c3aed;
+      color: #ffffff;
+    }
 
     /* Main View Option Tabs (Projects vs Projects Distribution) */
     .main-view-switcher {
@@ -992,12 +1233,24 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
           <p>Sign in to access your projects workspace</p>
         </div>
 
-        <div id="auth-error-msg" class="auth-alert"></div>
+        <!-- Auth Method Tabs: Password vs Mobile OTP -->
+        <div class="auth-method-switcher">
+          <button type="button" class="auth-method-tab active" id="tab-auth-pwd">
+            🔑 Password
+          </button>
+          <button type="button" class="auth-method-tab" id="tab-auth-otp">
+            📱 Mobile OTP
+          </button>
+        </div>
 
+        <div id="auth-error-msg" class="auth-alert"></div>
+        <div id="auth-success-msg" class="auth-alert-success"></div>
+
+        <!-- Method 1: Password Login -->
         <form id="login-form">
           <div class="form-group">
-            <label for="login-username">Email or Username</label>
-            <input type="text" id="login-username" placeholder="aadityaarwork@gmail.com" required autocomplete="username">
+            <label for="login-username">Email, Username, or Mobile</label>
+            <input type="text" id="login-username" placeholder="aadityaarwork@gmail.com / 7338966459" required autocomplete="username">
           </div>
           <div class="form-group">
             <label for="login-password">Password</label>
@@ -1007,7 +1260,76 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             🚀 Sign In
           </button>
         </form>
+
+        <!-- Method 2: Mobile OTP Login -->
+        <div id="otp-auth-section" style="display: none;">
+          <!-- Step 1: Request OTP -->
+          <form id="otp-send-form">
+            <div class="form-group">
+              <label for="otp-phone-input">Mobile Number</label>
+              <div style="display: flex; gap: 0.5rem;">
+                <div style="background: #120e24; border: 1px solid #3b3263; border-radius: 0.5rem; padding: 0.65rem 0.85rem; color: #c4b5fd; font-weight: 700; display: flex; align-items: center;">
+                  🇮🇳 +91
+                </div>
+                <input type="tel" id="otp-phone-input" placeholder="7338966459" maxlength="15" required style="flex: 1;" value="7338966459">
+              </div>
+              <p style="font-size: 0.75rem; color: #a79fc2; margin-top: 0.35rem;">
+                A 6-digit verification code will be sent to this number.
+              </p>
+            </div>
+            <button type="submit" id="btn-send-otp" class="btn-primary" style="width: 100%; justify-content: center; padding: 0.75rem; margin-top: 0.25rem;">
+              📩 Send OTP
+            </button>
+          </form>
+
+          <!-- Step 2: Verify OTP -->
+          <form id="otp-verify-form" style="display: none; margin-top: 0.5rem;">
+            <div style="background: rgba(124, 58, 237, 0.12); border: 1px solid rgba(124, 58, 237, 0.35); border-radius: 0.5rem; padding: 0.65rem 0.85rem; margin-bottom: 1rem; display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <span style="font-size: 0.8rem; color: #a79fc2;">Sent to: </span>
+                <strong id="otp-target-display" style="color: #e9d5ff;">+91 7338966459</strong>
+              </div>
+              <button type="button" id="btn-change-phone" class="btn-link" style="font-size: 0.8rem; color: #c084fc;">
+                Change ✏️
+              </button>
+            </div>
+
+            <div class="form-group">
+              <label for="otp-code-input">Enter 6-Digit Verification Code</label>
+              <input type="text" id="otp-code-input" placeholder="• • • • • •" maxlength="6" pattern="[0-9]{6}" required
+                style="letter-spacing: 0.5rem; text-align: center; font-size: 1.4rem; font-weight: 700; padding: 0.65rem; color: #c084fc;">
+            </div>
+
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; font-size: 0.8rem;">
+              <span id="otp-timer-display" style="color: #a79fc2;">Expires in 05:00</span>
+              <button type="button" id="btn-resend-otp" class="btn-link" style="color: #a79fc2; text-decoration: none;" disabled>
+                Resend in 30s
+              </button>
+            </div>
+
+            <button type="submit" id="btn-verify-otp-submit" class="btn-primary" style="width: 100%; justify-content: center; padding: 0.75rem;">
+              🚀 Verify & Log In
+            </button>
+          </form>
+        </div>
       </div>
+    </div>
+
+    <!-- Floating Interactive Simulated SMS Notification Toast -->
+    <div id="sms-toast" class="sms-toast" style="display: none;">
+      <div class="sms-toast-header">
+        <div>
+          <span class="sms-toast-icon">💬</span>
+          <span class="sms-toast-app">Messages • Just now</span>
+        </div>
+        <button type="button" class="sms-toast-close" id="btn-close-toast">✕</button>
+      </div>
+      <div class="sms-toast-body">
+        <strong>ProjectsTracker</strong>: Your login verification code is <span id="sms-toast-code" class="sms-code-highlight">123456</span>. Valid for 5 minutes.
+      </div>
+      <button type="button" id="btn-autofill-otp" class="sms-toast-btn">
+        ⚡ Auto-Fill Code
+      </button>
     </div>
 
     <!-- MAIN APP SCREEN (WHEN LOGGED IN) -->
@@ -1287,9 +1609,39 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     const appScreen = document.getElementById('app-screen');
     const loginForm = document.getElementById('login-form');
     const loginUsername = document.getElementById('login-username');
-    const loginPassword = document.getElementById('login-password');
     const authErrorMsg = document.getElementById('auth-error-msg');
+    const authSuccessMsg = document.getElementById('auth-success-msg');
     const btnLogout = document.getElementById('btn-logout');
+
+    // Auth Method Switcher Tabs & OTP Elements
+    const tabAuthPwd = document.getElementById('tab-auth-pwd');
+    const tabAuthOtp = document.getElementById('tab-auth-otp');
+    const otpAuthSection = document.getElementById('otp-auth-section');
+
+    const otpSendForm = document.getElementById('otp-send-form');
+    const otpPhoneInput = document.getElementById('otp-phone-input');
+    const btnSendOtp = document.getElementById('btn-send-otp');
+
+    const otpVerifyForm = document.getElementById('otp-verify-form');
+    const otpTargetDisplay = document.getElementById('otp-target-display');
+    const btnChangePhone = document.getElementById('btn-change-phone');
+    const otpCodeInput = document.getElementById('otp-code-input');
+    const otpTimerDisplay = document.getElementById('otp-timer-display');
+    const btnResendOtp = document.getElementById('btn-resend-otp');
+    const btnVerifyOtpSubmit = document.getElementById('btn-verify-otp-submit');
+
+    // Simulated SMS Toast Elements
+    const smsToast = document.getElementById('sms-toast');
+    const smsToastCode = document.getElementById('sms-toast-code');
+    const btnAutofillOtp = document.getElementById('btn-autofill-otp');
+    const btnCloseToast = document.getElementById('btn-close-toast');
+
+    let currentOtpPhone = '';
+    let currentOtpCode = '';
+    let resendCountdown = 0;
+    let resendInterval = null;
+    let expiryCountdown = 0;
+    let expiryInterval = null;
 
     const headerUserStatus = document.getElementById('header-user-status');
     const userAvatarIcon = document.getElementById('user-avatar-icon');
@@ -1405,17 +1757,48 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
       }
     }
 
+    function setAuthMethod(method) {
+      authErrorMsg.style.display = 'none';
+      authSuccessMsg.style.display = 'none';
+      if (method === 'pwd') {
+        tabAuthPwd.classList.add('active');
+        tabAuthOtp.classList.remove('active');
+        loginForm.style.display = 'block';
+        otpAuthSection.style.display = 'none';
+      } else {
+        tabAuthOtp.classList.add('active');
+        tabAuthPwd.classList.remove('active');
+        loginForm.style.display = 'none';
+        otpAuthSection.style.display = 'block';
+        otpPhoneInput.focus();
+      }
+    }
+
+    tabAuthPwd.addEventListener('click', () => setAuthMethod('pwd'));
+    tabAuthOtp.addEventListener('click', () => setAuthMethod('otp'));
+
     function showAuth() {
       authScreen.style.display = 'flex';
       appScreen.style.display = 'none';
       loginUsername.value = '';
       loginPassword.value = '';
+      otpCodeInput.value = '';
       authErrorMsg.style.display = 'none';
+      authSuccessMsg.style.display = 'none';
+      smsToast.style.display = 'none';
+      clearInterval(resendInterval);
+      clearInterval(expiryInterval);
+      otpVerifyForm.style.display = 'none';
+      otpSendForm.style.display = 'block';
+      setAuthMethod('pwd');
     }
 
     function showApp() {
       authScreen.style.display = 'none';
       appScreen.style.display = 'block';
+      smsToast.style.display = 'none';
+      clearInterval(resendInterval);
+      clearInterval(expiryInterval);
 
       // Update Header with User Info & Role
       userFullNameDisplay.textContent = currentUser.full_name;
@@ -1459,6 +1842,173 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     loginForm.addEventListener('submit', (e) => {
       e.preventDefault();
       login(loginUsername.value.trim(), loginPassword.value);
+    });
+
+    // -------------------------------------------------------------
+    // Mobile OTP Functions
+    // -------------------------------------------------------------
+    async function requestOtp(phone) {
+      authErrorMsg.style.display = 'none';
+      authSuccessMsg.style.display = 'none';
+      btnSendOtp.disabled = true;
+      btnSendOtp.textContent = '⏳ Sending OTP...';
+
+      try {
+        const res = await fetch('/api/auth/otp/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phone })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Failed to send OTP.');
+        }
+
+        currentOtpPhone = data.phone;
+        currentOtpCode = data.simulated_otp || '';
+
+        authSuccessMsg.textContent = '✅ ' + data.message;
+        authSuccessMsg.style.display = 'block';
+
+        otpTargetDisplay.textContent = '+91 ' + currentOtpPhone;
+        otpSendForm.style.display = 'none';
+        otpVerifyForm.style.display = 'block';
+        otpCodeInput.value = '';
+        otpCodeInput.focus();
+
+        // Show Simulated SMS Notification Toast
+        if (currentOtpCode) {
+          smsToastCode.textContent = currentOtpCode;
+          smsToast.style.display = 'block';
+        }
+
+        startOtpTimers(30, 300);
+
+      } catch (err) {
+        authErrorMsg.textContent = '⚠️ ' + err.message;
+        authErrorMsg.style.display = 'block';
+      } finally {
+        btnSendOtp.disabled = false;
+        btnSendOtp.textContent = '📩 Send OTP';
+      }
+    }
+
+    async function verifyOtp(phone, otp) {
+      authErrorMsg.style.display = 'none';
+      btnVerifyOtpSubmit.disabled = true;
+      btnVerifyOtpSubmit.textContent = '⏳ Verifying...';
+
+      try {
+        const res = await fetch('/api/auth/otp/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phone, otp })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Invalid OTP code.');
+        }
+
+        authToken = data.token;
+        currentUser = data.user;
+        localStorage.setItem('projects_tracker_token', authToken);
+
+        smsToast.style.display = 'none';
+        clearInterval(resendInterval);
+        clearInterval(expiryInterval);
+
+        showApp();
+      } catch (err) {
+        authErrorMsg.textContent = '⚠️ ' + err.message;
+        authErrorMsg.style.display = 'block';
+        otpCodeInput.focus();
+        otpCodeInput.select();
+      } finally {
+        btnVerifyOtpSubmit.disabled = false;
+        btnVerifyOtpSubmit.textContent = '🚀 Verify & Log In';
+      }
+    }
+
+    function startOtpTimers(resendSec, expirySec) {
+      clearInterval(resendInterval);
+      clearInterval(expiryInterval);
+
+      resendCountdown = resendSec;
+      btnResendOtp.disabled = true;
+      btnResendOtp.textContent = `Resend in ${resendCountdown}s`;
+
+      resendInterval = setInterval(() => {
+        resendCountdown--;
+        if (resendCountdown <= 0) {
+          clearInterval(resendInterval);
+          btnResendOtp.disabled = false;
+          btnResendOtp.textContent = 'Resend OTP 🔄';
+        } else {
+          btnResendOtp.textContent = `Resend in ${resendCountdown}s`;
+        }
+      }, 1000);
+
+      expiryCountdown = expirySec;
+      updateExpiryDisplay();
+      expiryInterval = setInterval(() => {
+        expiryCountdown--;
+        if (expiryCountdown <= 0) {
+          clearInterval(expiryInterval);
+          otpTimerDisplay.textContent = 'Code expired';
+          otpTimerDisplay.style.color = '#ef4444';
+        } else {
+          updateExpiryDisplay();
+        }
+      }, 1000);
+    }
+
+    function updateExpiryDisplay() {
+      const mins = Math.floor(expiryCountdown / 60);
+      const secs = expiryCountdown % 60;
+      otpTimerDisplay.textContent = `Expires in ${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+      otpTimerDisplay.style.color = '#a79fc2';
+    }
+
+    otpSendForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const phone = otpPhoneInput.value.trim();
+      if (phone) requestOtp(phone);
+    });
+
+    btnResendOtp.addEventListener('click', () => {
+      if (!btnResendOtp.disabled && currentOtpPhone) {
+        requestOtp(currentOtpPhone);
+      }
+    });
+
+    btnChangePhone.addEventListener('click', () => {
+      otpVerifyForm.style.display = 'none';
+      otpSendForm.style.display = 'block';
+      authSuccessMsg.style.display = 'none';
+      authErrorMsg.style.display = 'none';
+      smsToast.style.display = 'none';
+      clearInterval(resendInterval);
+      clearInterval(expiryInterval);
+      otpPhoneInput.focus();
+    });
+
+    otpVerifyForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const code = otpCodeInput.value.trim();
+      if (code) verifyOtp(currentOtpPhone, code);
+    });
+
+    btnAutofillOtp.addEventListener('click', () => {
+      if (currentOtpCode) {
+        otpCodeInput.value = currentOtpCode;
+        otpCodeInput.focus();
+        otpCodeInput.style.borderColor = '#10b981';
+        setTimeout(() => { otpCodeInput.style.borderColor = '#c084fc'; }, 900);
+      }
+    });
+
+    btnCloseToast.addEventListener('click', () => {
+      smsToast.style.display = 'none';
     });
 
     btnLogout.addEventListener('click', logout);
