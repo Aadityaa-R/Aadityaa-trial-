@@ -46,6 +46,7 @@ def init_db():
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE NOT NULL,
+        email TEXT UNIQUE NOT NULL,
         password_hash TEXT NOT NULL,
         full_name TEXT NOT NULL,
         role TEXT CHECK(role IN ('manager', 'user')) NOT NULL DEFAULT 'user',
@@ -53,24 +54,26 @@ def init_db():
     );
     """)
 
-    # 2. Seed default users if empty
+    # 2. Seed default Manager if users table is empty
     cursor.execute("SELECT COUNT(*) FROM users;")
     if cursor.fetchone()[0] == 0:
-        cursor.executemany("""
-        INSERT INTO users (username, password_hash, full_name, role)
-        VALUES (?, ?, ?, ?)
-        """, [
-            ("admin", hash_password("admin123"), "Alice Vance (Manager)", "manager"),
-            ("bob", hash_password("user123"), "Bob Smith", "user"),
-            ("charlie", hash_password("user123"), "Charlie Davis", "user")
-        ])
+        cursor.execute("""
+        INSERT INTO users (username, email, password_hash, full_name, role)
+        VALUES (?, ?, ?, ?, ?)
+        """, (
+            "aadityaa",
+            "aadityaarwork@gmail.com",
+            hash_password("123456"),
+            "Aadityaa R",
+            "manager"
+        ))
         conn.commit()
 
-    # 3. Create Projects Table
+    # 3. Create Projects Table (empty by default)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS projects (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
+        user_id INTEGER NOT NULL,
         name TEXT NOT NULL,
         description TEXT,
         technology TEXT NOT NULL,
@@ -80,41 +83,7 @@ def init_db():
     );
     """)
 
-    # Check for user_id column in projects (migration)
-    cursor.execute("PRAGMA table_info(projects);")
-    columns = [col[1] for col in cursor.fetchall()]
-    if "user_id" not in columns:
-        cursor.execute("ALTER TABLE projects ADD COLUMN user_id INTEGER REFERENCES users(id);")
-        conn.commit()
-
-    # Get user mapping
-    cursor.execute("SELECT id, username FROM users;")
-    user_map = {row[1]: row[0] for row in cursor.fetchall()}
-    bob_id = user_map.get("bob", 2)
-    charlie_id = user_map.get("charlie", 3)
-
-    # Assign unassigned projects
-    cursor.execute("SELECT id FROM projects WHERE user_id IS NULL;")
-    unassigned = [r[0] for r in cursor.fetchall()]
-    for pid in unassigned:
-        target_uid = bob_id if (pid % 2 == 1) else charlie_id
-        cursor.execute("UPDATE projects SET user_id = ? WHERE id = ?", (target_uid, pid))
     conn.commit()
-
-    # Seed sample projects if empty
-    cursor.execute("SELECT COUNT(*) FROM projects;")
-    if cursor.fetchone()[0] == 0:
-        cursor.executemany("""
-        INSERT INTO projects (user_id, name, description, technology, status)
-        VALUES (?, ?, ?, ?, ?)
-        """, [
-            (bob_id, "Python REST API", "Lightweight backend server handling HTTP endpoints", "Python", "Completed"),
-            (charlie_id, "SQL Relational Database", "SQLite database managing structured data and queries", "SQL", "Completed"),
-            (bob_id, "React Frontend Interface", "Interactive UI component for managing projects", "React", "Completed"),
-            (charlie_id, "Fullstack Integration", "End-to-end communication between React and Python backend", "Fullstack", "Completed")
-        ])
-        conn.commit()
-
     conn.close()
 
 init_db()
@@ -181,7 +150,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 conn = sqlite3.connect(DB_FILE)
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
-                cursor.execute("SELECT id, username, full_name, role FROM users ORDER BY full_name ASC")
+                cursor.execute("SELECT id, username, email, full_name, role FROM users ORDER BY full_name ASC")
                 users_list = [dict(r) for r in cursor.fetchall()]
                 conn.close()
                 self._send_json(200, users_list)
@@ -308,13 +277,18 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 body = self.rfile.read(content_length).decode("utf-8")
                 data = json.loads(body)
 
-                username = data.get("username", "").strip()
+                login_identifier = data.get("username", "").strip()
                 password = data.get("password", "").strip()
 
                 conn = sqlite3.connect(DB_FILE)
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
-                cursor.execute("SELECT id, username, full_name, role, password_hash FROM users WHERE username = ?", (username,))
+                # Accept login by either email or username
+                cursor.execute("""
+                SELECT id, username, email, full_name, role, password_hash
+                FROM users
+                WHERE username = ? OR email = ?
+                """, (login_identifier, login_identifier))
                 row = cursor.fetchone()
                 conn.close()
 
@@ -323,13 +297,14 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                     user_info = {
                         "id": row["id"],
                         "username": row["username"],
+                        "email": row["email"],
                         "full_name": row["full_name"],
                         "role": row["role"]
                     }
                     SESSIONS[token] = user_info
                     self._send_json(200, {"token": token, "user": user_info})
                 else:
-                    self._send_json(401, {"error": "Invalid username or password"})
+                    self._send_json(401, {"error": "Invalid email/username or password"})
                 return
 
             elif path == "/api/auth/logout":
@@ -640,7 +615,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
       border-radius: 1rem;
       padding: 2.25rem;
       width: 100%;
-      max-width: 480px;
+      max-width: 440px;
       box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
       position: relative;
     }
@@ -679,96 +654,6 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
       font-size: 0.85rem;
       margin-bottom: 1.25rem;
       display: none;
-    }
-    .auth-divider {
-      display: flex;
-      align-items: center;
-      text-align: center;
-      margin: 1.5rem 0 1.25rem 0;
-      color: #6d6490;
-      font-size: 0.72rem;
-      letter-spacing: 0.06em;
-      font-weight: 700;
-    }
-    .auth-divider::before, .auth-divider::after {
-      content: '';
-      flex: 1;
-      border-bottom: 1px solid #2e264f;
-    }
-    .auth-divider span {
-      padding: 0 0.75rem;
-    }
-    .demo-buttons-container {
-      display: flex;
-      flex-direction: column;
-      gap: 0.65rem;
-      margin-bottom: 1.25rem;
-    }
-    .btn-demo {
-      background: #141029;
-      border: 1px solid #3b3263;
-      border-radius: 0.65rem;
-      padding: 0.75rem 1rem;
-      text-align: left;
-      cursor: pointer;
-      transition: all 0.2s;
-      color: #f5f3ff;
-      width: 100%;
-    }
-    .btn-demo:hover {
-      background: #241c42;
-      border-color: #a855f7;
-      transform: translateY(-2px);
-      box-shadow: 0 4px 15px rgba(168, 85, 247, 0.25);
-    }
-    .btn-demo.manager {
-      border-color: #7c3aed;
-      background: linear-gradient(135deg, rgba(124, 58, 237, 0.18) 0%, rgba(28, 23, 53, 0.8) 100%);
-    }
-    .demo-role-badge {
-      display: inline-block;
-      font-size: 0.68rem;
-      font-weight: 800;
-      padding: 0.15rem 0.5rem;
-      border-radius: 0.25rem;
-      background: #7c3aed;
-      color: #ffffff;
-      letter-spacing: 0.05em;
-      margin-bottom: 0.25rem;
-    }
-    .demo-role-badge.user-badge {
-      background: #0284c7;
-    }
-    .demo-name {
-      font-weight: 700;
-      font-size: 0.95rem;
-      color: #f5f3ff;
-    }
-    .demo-desc {
-      font-size: 0.75rem;
-      color: #a79fc2;
-      margin-top: 0.15rem;
-    }
-    .demo-users-row {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 0.65rem;
-    }
-    .demo-credentials-footer {
-      background: #120e24;
-      border: 1px solid #2e264f;
-      border-radius: 0.5rem;
-      padding: 0.75rem;
-      font-size: 0.78rem;
-      color: #a79fc2;
-      line-height: 1.5;
-    }
-    .demo-credentials-footer code {
-      background: #1f1938;
-      color: #c084fc;
-      padding: 0.1rem 0.35rem;
-      border-radius: 0.25rem;
-      font-family: monospace;
     }
 
     /* Main View Option Tabs (Projects vs Projects Distribution) */
@@ -1094,57 +979,24 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         <div class="auth-header">
           <div class="auth-icon-badge">🔐</div>
           <h2>Projects Tracker</h2>
-          <p>Role-Based Authentication (Managers & Users)</p>
+          <p>Sign in to access your projects workspace</p>
         </div>
 
         <div id="auth-error-msg" class="auth-alert"></div>
 
         <form id="login-form">
           <div class="form-group">
-            <label for="login-username">Username</label>
-            <input type="text" id="login-username" placeholder="Enter username (e.g. admin or bob)" required autocomplete="username">
+            <label for="login-username">Email or Username</label>
+            <input type="text" id="login-username" placeholder="aadityaarwork@gmail.com" required autocomplete="username">
           </div>
           <div class="form-group">
             <label for="login-password">Password</label>
-            <input type="password" id="login-password" placeholder="Enter password" required autocomplete="current-password">
+            <input type="password" id="login-password" placeholder="••••••••" required autocomplete="current-password">
           </div>
           <button type="submit" id="btn-login-submit" class="btn-primary" style="width: 100%; justify-content: center; padding: 0.75rem; margin-top: 0.5rem;">
             🚀 Sign In
           </button>
         </form>
-
-        <div class="auth-divider">
-          <span>OR QUICK 1-CLICK DEMO LOGIN</span>
-        </div>
-
-        <!-- Quick Demo Login Buttons for Instant Testing -->
-        <div class="demo-buttons-container">
-          <button type="button" class="btn-demo manager" id="btn-demo-manager">
-            <div class="demo-role-badge">👑 MANAGER</div>
-            <div class="demo-name">Alice Vance (Manager)</div>
-            <div class="demo-desc">Can view all users' data sorted by name & manage team</div>
-          </button>
-
-          <div class="demo-users-row">
-            <button type="button" class="btn-demo" id="btn-demo-bob">
-              <div class="demo-role-badge user-badge">👤 USER</div>
-              <div class="demo-name">Bob Smith</div>
-              <div class="demo-desc">Only views Bob's data</div>
-            </button>
-            <button type="button" class="btn-demo" id="btn-demo-charlie">
-              <div class="demo-role-badge user-badge">👤 USER</div>
-              <div class="demo-name">Charlie Davis</div>
-              <div class="demo-desc">Only views Charlie's data</div>
-            </button>
-          </div>
-        </div>
-
-        <div class="demo-credentials-footer">
-          <div>💡 <strong>Preset Credentials:</strong></div>
-          <div style="margin-top: 0.25rem;">• Manager: <code>admin</code> / <code>admin123</code></div>
-          <div>• User 1: <code>bob</code> / <code>user123</code></div>
-          <div>• User 2: <code>charlie</code> / <code>user123</code></div>
-        </div>
       </div>
     </div>
 
@@ -1244,7 +1096,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             <div class="form-group">
               <label for="edit-select">Select Project to Modify</label>
               <select id="edit-select">
-                <option value="">Loading projects...</option>
+                <option value="">No projects available</option>
               </select>
             </div>
             <!-- Assignee Selector for Edit (Shown for Managers) -->
@@ -1292,7 +1144,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         <div class="card">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.75rem;">
             <h2 id="projects-table-title">Projects (SQL SELECT)</h2>
-            <span style="font-size: 0.85rem; color: #a79fc2;" id="record-counter">Showing records</span>
+            <span style="font-size: 0.85rem; color: #a79fc2;" id="record-counter">Showing 0 records</span>
           </div>
 
           <!-- Controls: Search + Tech Sort Dropdown + Manager User Filter -->
@@ -1342,7 +1194,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 </tr>
               </thead>
               <tbody id="projects-tbody">
-                <tr><td colspan="7" style="text-align: center; color: #a79fc2; padding: 2rem;">Loading projects...</td></tr>
+                <tr><td colspan="7" style="text-align: center; color: #a79fc2; padding: 2rem;">No projects found in database.</td></tr>
               </tbody>
             </table>
           </div>
@@ -1416,9 +1268,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
       'In Progress': '#f59e0b',
       'On Hold': '#ef4444',
       'Planned': '#8b5cf6',
-      'Alice Vance (Manager)': '#a855f7',
-      'Bob Smith': '#3b82f6',
-      'Charlie Davis': '#10b981'
+      'Aadityaa R': '#a855f7'
     };
     const fallbackColors = ['#8b5cf6', '#f59e0b', '#06b6d4', '#ec4899', '#10b981', '#3b82f6', '#a855f7', '#14b8a6'];
 
@@ -1596,11 +1446,6 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
       fetchProjects();
     }
 
-    // Demo Logins
-    document.getElementById('btn-demo-manager').addEventListener('click', () => login('admin', 'admin123'));
-    document.getElementById('btn-demo-bob').addEventListener('click', () => login('bob', 'user123'));
-    document.getElementById('btn-demo-charlie').addEventListener('click', () => login('charlie', 'user123'));
-
     loginForm.addEventListener('submit', (e) => {
       e.preventDefault();
       login(loginUsername.value.trim(), loginPassword.value);
@@ -1655,7 +1500,6 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         }
         allProjects = await res.json();
         
-        // If manager, data is already sorted by user full name ASC from SQL; otherwise ID DESC
         renderTable();
         renderSortMenu();
         renderUserFilterMenu();
@@ -1725,7 +1569,6 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     }
 
     function renderTable() {
-      // Filter projects client-side if needed
       let filtered = [...allProjects];
 
       if (searchQuery) {
@@ -1945,10 +1788,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
       if (!name) return;
 
-      // Find owner name for UI
       const ownerObj = allUsers.find(u => u.id === assignedUid) || currentUser;
 
-      // Optimistic ID
       const existingIds = new Set(allProjects.map(p => Number(p.id)));
       let nextId = 1;
       while (existingIds.has(nextId)) nextId++;
@@ -1965,7 +1806,6 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         _isNew: true
       };
 
-      // Clear input fields immediately
       document.getElementById('proj-name').value = '';
       document.getElementById('proj-desc').value = '';
 
@@ -2105,7 +1945,6 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     }
 
     function renderPieChart() {
-      // Calculate counts from currently loaded projects
       const counts = {};
       allProjects.forEach(p => {
         let key = 'Other';
@@ -2119,7 +1958,6 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         counts[key] = (counts[key] || 0) + 1;
       });
 
-      // Sort slices by value descending
       const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
       const total = allProjects.length;
 
@@ -2200,7 +2038,6 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
       pieChartSvg.innerHTML = svgHtml;
       pieChartLegend.innerHTML = legendHtml;
 
-      // Add interactive hover sync between legend items and pie slices
       const slices = pieChartSvg.querySelectorAll('.pie-slice');
       const legendItems = pieChartLegend.querySelectorAll('.legend-item');
 
